@@ -19,7 +19,9 @@ import (
 	"sync"
 	"time"
 
+	"github.com/cosmtrek/mindwalk/internal/adapter"
 	"github.com/cosmtrek/mindwalk/internal/adapter/claudecode"
+	"github.com/cosmtrek/mindwalk/internal/adapter/codex"
 	"github.com/cosmtrek/mindwalk/internal/citymap"
 	"github.com/cosmtrek/mindwalk/internal/model"
 )
@@ -30,6 +32,7 @@ var embeddedStatic embed.FS
 type Config struct {
 	Port        int
 	ClaudeDir   string
+	CodexDir    string
 	OpenSession string
 	Dev         bool
 	RepoRoot    string
@@ -37,7 +40,7 @@ type Config struct {
 
 type Server struct {
 	cfg       Config
-	adapter   claudecode.Adapter
+	adapters  []adapter.Source
 	mu        sync.Mutex
 	sessions  []model.SessionMeta
 	sessionAt time.Time
@@ -71,7 +74,7 @@ const (
 func New(cfg Config) *Server {
 	return &Server{
 		cfg:       cfg,
-		adapter:   claudecode.Adapter{Dir: cfg.ClaudeDir},
+		adapters:  []adapter.Source{claudecode.Adapter{Dir: cfg.ClaudeDir}, codex.Adapter{Dir: cfg.CodexDir}},
 		traces:    map[string]*model.Trace{},
 		maps:      map[string]*model.CityMap{},
 		cacheAt:   map[string]time.Time{},
@@ -161,7 +164,7 @@ func (s *Server) listSessions() ([]model.SessionMeta, error) {
 		return nil, err
 	}
 	if s.cfg.OpenSession != "" {
-		meta, err := s.summarizeCached(s.cfg.OpenSession, nil)
+		meta, err := s.summarizeAnyCached(s.cfg.OpenSession, nil)
 		if err == nil {
 			found := false
 			for i := range sessions {
@@ -187,41 +190,62 @@ func (s *Server) listSessions() ([]model.SessionMeta, error) {
 }
 
 func (s *Server) scanSessions() ([]model.SessionMeta, error) {
-	dir := s.cfg.ClaudeDir
-	if dir == "" {
-		dir = claudecode.DefaultDir()
-	}
 	seen := map[string]bool{}
 	var sessions []model.SessionMeta
-	err := filepath.WalkDir(dir, func(path string, entry os.DirEntry, walkErr error) error {
-		if walkErr != nil {
-			return nil
+	for _, source := range s.adapters {
+		dir := source.SessionDir()
+		if dir == "" {
+			continue
 		}
-		if entry.IsDir() {
-			return nil
+		if info, err := os.Stat(dir); err != nil || !info.IsDir() {
+			continue
 		}
-		if filepath.Ext(path) != ".jsonl" || strings.HasPrefix(filepath.Base(path), "agent-") {
+		err := filepath.WalkDir(dir, func(path string, entry os.DirEntry, walkErr error) error {
+			if walkErr != nil {
+				return nil
+			}
+			if entry.IsDir() {
+				return nil
+			}
+			if filepath.Ext(path) != ".jsonl" || skipSessionFile(source, path) {
+				return nil
+			}
+			info, err := entry.Info()
+			if err != nil {
+				return nil
+			}
+			key := summaryKey(source, path)
+			seen[key] = true
+			meta, err := s.summarizeCached(source, path, info)
+			if err == nil {
+				sessions = append(sessions, meta)
+			}
 			return nil
-		}
-		info, err := entry.Info()
+		})
 		if err != nil {
-			return nil
+			return nil, err
 		}
-		seen[path] = true
-		meta, err := s.summarizeCached(path, info)
-		if err == nil {
-			sessions = append(sessions, meta)
-		}
-		return nil
-	})
-	if err != nil {
-		return nil, err
 	}
 	s.pruneSummaryCache(seen)
 	return sessions, nil
 }
 
-func (s *Server) summarizeCached(path string, info fs.FileInfo) (model.SessionMeta, error) {
+func (s *Server) summarizeAnyCached(path string, info fs.FileInfo) (model.SessionMeta, error) {
+	var lastErr error
+	for _, source := range s.adapters {
+		meta, err := s.summarizeCached(source, path, info)
+		if err == nil {
+			return meta, nil
+		}
+		lastErr = err
+	}
+	if lastErr != nil {
+		return model.SessionMeta{}, lastErr
+	}
+	return model.SessionMeta{}, errors.New("no session adapters configured")
+}
+
+func (s *Server) summarizeCached(source adapter.Source, path string, info fs.FileInfo) (model.SessionMeta, error) {
 	if info == nil {
 		var err error
 		info, err = os.Stat(path)
@@ -229,20 +253,21 @@ func (s *Server) summarizeCached(path string, info fs.FileInfo) (model.SessionMe
 			return model.SessionMeta{}, err
 		}
 	}
+	key := summaryKey(source, path)
 	s.mu.Lock()
-	if cached, ok := s.summaries[path]; ok && cached.size == info.Size() && cached.modTime.Equal(info.ModTime()) {
+	if cached, ok := s.summaries[key]; ok && cached.size == info.Size() && cached.modTime.Equal(info.ModTime()) {
 		meta := cached.meta
 		s.mu.Unlock()
 		return meta, nil
 	}
 	s.mu.Unlock()
 
-	meta, err := s.adapter.Summarize(path)
+	meta, err := source.Summarize(path)
 	if err != nil {
 		return model.SessionMeta{}, err
 	}
 	s.mu.Lock()
-	s.summaries[path] = summaryCacheEntry{size: info.Size(), modTime: info.ModTime(), meta: meta}
+	s.summaries[key] = summaryCacheEntry{size: info.Size(), modTime: info.ModTime(), meta: meta}
 	s.mu.Unlock()
 	return meta, nil
 }
@@ -250,9 +275,9 @@ func (s *Server) summarizeCached(path string, info fs.FileInfo) (model.SessionMe
 func (s *Server) pruneSummaryCache(seen map[string]bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	for path := range s.summaries {
-		if !seen[path] && path != s.cfg.OpenSession {
-			delete(s.summaries, path)
+	for key := range s.summaries {
+		if !seen[key] && summaryPath(key) != s.cfg.OpenSession {
+			delete(s.summaries, key)
 		}
 	}
 }
@@ -304,7 +329,11 @@ func (s *Server) loadTraceAndMap(id string) (*model.Trace, *model.CityMap, error
 	if err != nil {
 		return nil, nil, err
 	}
-	trace, parseErr := s.adapter.Parse(meta.Path)
+	source := s.adapterForHarness(meta.Harness)
+	if source == nil {
+		return nil, nil, fmt.Errorf("no adapter for harness %q", meta.Harness)
+	}
+	trace, parseErr := source.Parse(meta.Path)
 	if trace == nil {
 		if parseErr != nil {
 			return nil, nil, parseErr
@@ -402,10 +431,34 @@ func (s *Server) evictTraceCacheLocked() {
 
 func (s *Server) openSessionID() string {
 	id := strings.TrimSuffix(filepath.Base(s.cfg.OpenSession), filepath.Ext(s.cfg.OpenSession))
-	if meta, err := s.summarizeCached(s.cfg.OpenSession, nil); err == nil && meta.ID != "" {
+	if meta, err := s.summarizeAnyCached(s.cfg.OpenSession, nil); err == nil && meta.ID != "" {
 		id = meta.ID
 	}
 	return id
+}
+
+func (s *Server) adapterForHarness(harness string) adapter.Source {
+	for _, source := range s.adapters {
+		if source.Harness() == harness {
+			return source
+		}
+	}
+	return nil
+}
+
+func summaryKey(source adapter.Source, path string) string {
+	return source.Harness() + "\x00" + path
+}
+
+func summaryPath(key string) string {
+	if idx := strings.IndexByte(key, 0); idx >= 0 {
+		return key[idx+1:]
+	}
+	return key
+}
+
+func skipSessionFile(source adapter.Source, path string) bool {
+	return source.Harness() == "claude-code" && strings.HasPrefix(filepath.Base(path), "agent-")
 }
 
 func assignFileIDs(trace *model.Trace, city *model.CityMap) {

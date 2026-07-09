@@ -106,6 +106,20 @@ func TestCompactionUsesSubtypeOnly(t *testing.T) {
 	}
 }
 
+func TestSummarizeRecognizesUnknownClaudeLineWithSessionID(t *testing.T) {
+	session := filepath.Join(t.TempDir(), "metadata.jsonl")
+	writeSession(t, session,
+		`{"type":"metadata","timestamp":"2026-07-09T00:00:00Z","sessionId":"metadata-session","cwd":"/tmp"}`,
+	)
+	meta, err := (Adapter{}).Summarize(session)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if meta.ID != "metadata-session" || meta.Cwd != "/tmp" {
+		t.Fatalf("meta = %#v", meta)
+	}
+}
+
 func TestSummarizeHandlesLargeJSONLines(t *testing.T) {
 	dir := t.TempDir()
 	session := filepath.Join(dir, "large.jsonl")

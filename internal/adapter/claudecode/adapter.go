@@ -1,17 +1,14 @@
 package claudecode
 
 import (
-	"bufio"
-	"bytes"
 	"encoding/json"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
-	"regexp"
 	"sort"
 	"strings"
 
+	"github.com/cosmtrek/mindwalk/internal/adapter"
 	"github.com/cosmtrek/mindwalk/internal/model"
 )
 
@@ -27,10 +24,21 @@ func DefaultDir() string {
 	return filepath.Join(home, ".claude", "projects")
 }
 
+func (a Adapter) Harness() string {
+	return "claude-code"
+}
+
+func (a Adapter) SessionDir() string {
+	if a.Dir != "" {
+		return a.Dir
+	}
+	return DefaultDir()
+}
+
 func (a Adapter) ListSessions() ([]model.SessionMeta, error) {
-	dir := a.Dir
-	if dir == "" {
-		dir = DefaultDir()
+	dir := a.SessionDir()
+	if info, err := os.Stat(dir); err != nil || !info.IsDir() {
+		return nil, nil
 	}
 	var metas []model.SessionMeta
 	err := filepath.WalkDir(dir, func(path string, entry os.DirEntry, walkErr error) error {
@@ -66,11 +74,15 @@ func (a Adapter) Summarize(path string) (model.SessionMeta, error) {
 	defer f.Close()
 
 	id := strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
-	meta := model.SessionMeta{ID: id, Harness: "claude-code", Path: path}
-	err = readJSONLines(f, func(data []byte) {
+	meta := model.SessionMeta{ID: id, Harness: a.Harness(), Path: path}
+	recognized := false
+	err = adapter.ReadJSONLines(f, func(data []byte) {
 		var line rawLine
 		if json.Unmarshal(data, &line) != nil {
 			return
+		}
+		if isClaudeLine(line) {
+			recognized = true
 		}
 		if line.SessionID != "" {
 			meta.ID = line.SessionID
@@ -103,6 +115,9 @@ func (a Adapter) Summarize(path string) (model.SessionMeta, error) {
 	if meta.Title == "" {
 		meta.Title = filepath.Base(path)
 	}
+	if !recognized {
+		return model.SessionMeta{}, fmt.Errorf("not a Claude Code session: %s", path)
+	}
 	return meta, err
 }
 
@@ -118,19 +133,23 @@ func (a Adapter) Parse(path string) (*model.Trace, error) {
 		Version: 1,
 		Session: model.TraceSession{
 			ID:      id,
-			Harness: "claude-code",
+			Harness: a.Harness(),
 			Path:    path,
 		},
 		Events: []model.Event{},
 		Marks:  []model.Mark{},
 	}
 
-	pending := map[string]toolCall{}
+	recognized := false
+	pending := map[string]adapter.ToolCall{}
 	pendingOrder := []string{}
-	err = readJSONLines(f, func(data []byte) {
+	err = adapter.ReadJSONLines(f, func(data []byte) {
 		var line rawLine
 		if json.Unmarshal(data, &line) != nil {
 			return
+		}
+		if isClaudeLine(line) {
+			recognized = true
 		}
 		applyLineMeta(trace, line)
 		if line.Type == "ai-title" && line.AITitle != "" {
@@ -157,7 +176,7 @@ func (a Adapter) Parse(path string) (*model.Trace, error) {
 		for _, item := range msg.Content.Items {
 			switch item.Type {
 			case "tool_use":
-				call := toolCall{
+				call := adapter.ToolCall{
 					ID:        item.ID,
 					Name:      item.Name,
 					Input:     item.Input,
@@ -194,26 +213,10 @@ func (a Adapter) Parse(path string) (*model.Trace, error) {
 	}
 	trace.Session.EventCount = len(trace.Events)
 	trace.Stats = model.ComputeStats(trace, 0)
-	return trace, err
-}
-
-func readJSONLines(r io.Reader, visit func([]byte)) error {
-	reader := bufio.NewReaderSize(r, 64*1024)
-	for {
-		line, err := reader.ReadBytes('\n')
-		if len(line) > 0 {
-			line = bytes.TrimRight(line, "\r\n")
-			if len(line) > 0 {
-				visit(line)
-			}
-		}
-		if err != nil {
-			if err == io.EOF {
-				return nil
-			}
-			return err
-		}
+	if !recognized {
+		return nil, fmt.Errorf("not a Claude Code session: %s", path)
 	}
+	return trace, err
 }
 
 type rawLine struct {
@@ -269,13 +272,6 @@ type contentItem struct {
 	Text      string         `json:"text"`
 }
 
-type toolCall struct {
-	ID        string
-	Name      string
-	Input     map[string]any
-	Timestamp string
-}
-
 func countToolUses(content contentList) int {
 	count := 0
 	for _, item := range content.Items {
@@ -320,298 +316,21 @@ func isCompaction(line rawLine) bool {
 	return line.Type == "system" && strings.Contains(strings.ToLower(line.Subtype), "compact")
 }
 
-func buildEvent(trace *model.Trace, call toolCall, result contentItem) model.Event {
-	resultText := contentToString(result.Content)
-	action := actionFor(call.Name, call.Input, resultText)
-	targets, outside := targetsFor(trace.Session.Cwd, call.Name, call.Input, resultText)
-	if targets == nil {
-		targets = []model.Target{}
+func isClaudeLine(line rawLine) bool {
+	if line.SessionID != "" {
+		return true
 	}
-	return model.Event{
-		Seq:         len(trace.Events),
-		Timestamp:   call.Timestamp,
-		Tool:        call.Name,
-		Action:      action,
-		Targets:     targets,
-		Outside:     outside,
-		ResultBytes: len(resultText),
-		IsError:     result.IsError,
-		Summary:     summarize(call.Name, call.Input, targets, outside, result.IsError),
-	}
-}
-
-func contentToString(v any) string {
-	switch x := v.(type) {
-	case nil:
-		return ""
-	case string:
-		return x
-	case []any:
-		parts := make([]string, 0, len(x))
-		for _, item := range x {
-			if m, ok := item.(map[string]any); ok {
-				if text, ok := m["text"].(string); ok {
-					parts = append(parts, text)
-				}
-				if text, ok := m["content"].(string); ok {
-					parts = append(parts, text)
-				}
-			}
-		}
-		return strings.Join(parts, "\n")
+	switch line.Type {
+	case "user", "assistant", "system", "ai-title":
+		return line.Timestamp != "" || len(line.Message) > 0
 	default:
-		b, _ := json.Marshal(v)
-		return string(b)
-	}
-}
-
-func actionFor(tool string, input map[string]any, result string) string {
-	switch tool {
-	case "Read":
-		return "read"
-	case "Write", "Edit", "MultiEdit", "NotebookEdit":
-		return "edit"
-	case "Grep", "Glob", "LS":
-		return "search"
-	case "Bash":
-		command, _ := input["command"].(string)
-		if verifyCommand(command) {
-			return "verify"
-		}
-		return "exec"
-	default:
-		_ = result
-		return "other"
-	}
-}
-
-func targetsFor(cwd, tool string, input map[string]any, result string) ([]model.Target, []model.OutsideTouch) {
-	var targets []model.Target
-	var outside []model.OutsideTouch
-	add := func(path, touch string, weak bool, lines [][2]int) {
-		rel, out, ok := normalizePath(cwd, path)
-		if !ok {
-			return
-		}
-		if out != nil {
-			outside = append(outside, *out)
-			return
-		}
-		if weak && !repoPathExists(cwd, rel) {
-			return
-		}
-		for i := range targets {
-			if targets[i].Path == rel {
-				if model.RankTouch(touch) > model.RankTouch(targets[i].Touch) {
-					targets[i].Touch = touch
-				}
-				targets[i].Lines = append(targets[i].Lines, lines...)
-				return
-			}
-		}
-		targets = append(targets, model.Target{Path: rel, Touch: touch, Lines: lines, Weak: weak})
-	}
-
-	switch tool {
-	case "Read":
-		if path, ok := input["file_path"].(string); ok {
-			add(path, "read", false, readLines(input))
-		}
-	case "Write", "Edit", "MultiEdit", "NotebookEdit":
-		if path, ok := input["file_path"].(string); ok {
-			add(path, "edit", false, nil)
-		}
-		if path, ok := input["notebook_path"].(string); ok {
-			add(path, "edit", false, nil)
-		}
-	case "Grep":
-		for _, hit := range parsePathHits(result) {
-			add(hit.path, "hit", false, hit.lines)
-		}
-		if len(targets) == 0 {
-			if path, ok := input["path"].(string); ok {
-				add(path, "hit", true, nil)
-			}
-		}
-	case "Glob", "LS":
-		for _, hit := range parsePathHits(result) {
-			add(hit.path, "hit", false, nil)
-		}
-		if path, ok := input["path"].(string); ok && len(targets) == 0 {
-			add(path, "hit", true, nil)
-		}
-	case "Bash":
-		command, _ := input["command"].(string)
-		for _, path := range extractPaths(command + "\n" + result) {
-			add(path, "hit", true, nil)
-		}
-	}
-	return targets, outside
-}
-
-func repoPathExists(cwd, rel string) bool {
-	if cwd == "" || rel == "" {
 		return false
 	}
-	abs := filepath.Join(cwd, filepath.FromSlash(rel))
-	_, err := os.Stat(abs)
-	return err == nil
 }
 
-func readLines(input map[string]any) [][2]int {
-	offset := intFromAny(input["offset"])
-	limit := intFromAny(input["limit"])
-	if offset <= 0 {
-		return nil
-	}
-	if limit <= 0 {
-		return [][2]int{{offset, offset}}
-	}
-	return [][2]int{{offset, offset + limit - 1}}
-}
-
-func intFromAny(v any) int {
-	switch x := v.(type) {
-	case float64:
-		return int(x)
-	case int:
-		return x
-	default:
-		return 0
-	}
-}
-
-func normalizePath(cwd, path string) (string, *model.OutsideTouch, bool) {
-	path = strings.TrimSpace(strings.Trim(path, `"'`))
-	if path == "" || strings.Contains(path, "\n") {
-		return "", nil, false
-	}
-	if strings.HasPrefix(path, "http://") || strings.HasPrefix(path, "https://") {
-		return "", nil, false
-	}
-	if !filepath.IsAbs(path) {
-		clean := filepath.ToSlash(filepath.Clean(path))
-		if clean == "." || strings.HasPrefix(clean, "..") {
-			return "", nil, false
-		}
-		return clean, nil, true
-	}
-	abs := filepath.Clean(path)
-	if cwd != "" {
-		root := filepath.Clean(cwd)
-		if rel, err := filepath.Rel(root, abs); err == nil && !strings.HasPrefix(rel, "..") && rel != "." {
-			return filepath.ToSlash(rel), nil, true
-		}
-	}
-	return "", &model.OutsideTouch{Scope: outsideScope(abs), Path: abs}, true
-}
-
-func outsideScope(path string) string {
-	home, _ := os.UserHomeDir()
-	if home != "" {
-		if rel, err := filepath.Rel(home, path); err == nil && !strings.HasPrefix(rel, "..") {
-			return "home"
-		}
-	}
-	if strings.HasPrefix(path, os.TempDir()) || strings.HasPrefix(path, "/tmp") {
-		return "tmp"
-	}
-	return "other"
-}
-
-type pathHit struct {
-	path  string
-	lines [][2]int
-}
-
-var pathLineRe = regexp.MustCompile(`(?:^|[\s"'([])([A-Za-z0-9_./@+-]*[/][A-Za-z0-9_./@+-]*\.[A-Za-z0-9][A-Za-z0-9._-]*):([0-9]+)`)
-var pathOnlyRe = regexp.MustCompile(`(?:^|[\s"'([])([./~A-Za-z0-9_@+-]*[/][A-Za-z0-9_./~@+-]*\.[A-Za-z0-9][A-Za-z0-9._-]*)(?:$|[\s"',)\]:;])`)
-
-func parsePathHits(text string) []pathHit {
-	byPath := map[string][][2]int{}
-	for _, m := range pathLineRe.FindAllStringSubmatch(text, -1) {
-		line := 0
-		fmt.Sscanf(m[2], "%d", &line)
-		if line > 0 {
-			if path, ok := cleanExtractedPath(m[1]); ok {
-				byPath[path] = append(byPath[path], [2]int{line, line})
-			}
-		}
-	}
-	for _, p := range extractPaths(text) {
-		if _, ok := byPath[p]; !ok {
-			byPath[p] = nil
-		}
-	}
-	out := make([]pathHit, 0, len(byPath))
-	for path, lines := range byPath {
-		out = append(out, pathHit{path: path, lines: lines})
-	}
-	sort.Slice(out, func(i, j int) bool { return out[i].path < out[j].path })
-	return out
-}
-
-func extractPaths(text string) []string {
-	matches := pathOnlyRe.FindAllStringSubmatch(text, -1)
-	seen := map[string]bool{}
-	paths := make([]string, 0, len(matches))
-	for _, m := range matches {
-		path, ok := cleanExtractedPath(m[1])
-		if !ok {
-			continue
-		}
-		if path == "" || seen[path] || strings.Contains(path, "://") {
-			continue
-		}
-		seen[path] = true
-		paths = append(paths, path)
-	}
-	sort.Strings(paths)
-	return paths
-}
-
-func cleanExtractedPath(path string) (string, bool) {
-	path = strings.TrimSpace(strings.Trim(path, `"' ,;:()[]{}`))
-	path = strings.TrimPrefix(path, "a/")
-	path = strings.TrimPrefix(path, "b/")
-	path = strings.TrimPrefix(path, "./")
-	if path == "" || strings.Contains(path, "://") || strings.ContainsAny(path, "\n\r\t") {
-		return "", false
-	}
-	if strings.HasPrefix(path, "--") || strings.HasPrefix(path, "++") {
-		return "", false
-	}
-	if !strings.Contains(path, "/") {
-		return "", false
-	}
-	return path, true
-}
-
-func verifyCommand(command string) bool {
-	c := strings.ToLower(command)
-	patterns := []string{"go test", "go vet", "npm test", "npm run build", "pnpm test", "pnpm build", "pytest", "make test", "cargo test", "swift test"}
-	for _, pattern := range patterns {
-		if strings.Contains(c, pattern) {
-			return true
-		}
-	}
-	return false
-}
-
-func summarize(tool string, input map[string]any, targets []model.Target, outside []model.OutsideTouch, isError bool) string {
-	verb := tool
-	if desc, ok := input["description"].(string); ok && desc != "" {
-		verb = desc
-	}
-	if command, ok := input["command"].(string); ok && command != "" {
-		verb = command
-		if len(verb) > 96 {
-			verb = verb[:93] + "..."
-		}
-	}
-	status := ""
-	if isError {
-		status = " error"
-	}
-	return fmt.Sprintf("%s -> %d targets, %d outside%s", verb, len(targets), len(outside), status)
+func buildEvent(trace *model.Trace, call adapter.ToolCall, result contentItem) model.Event {
+	return adapter.BuildEvent(trace, call, adapter.ToolResult{
+		Content: adapter.ContentToString(result.Content),
+		IsError: result.IsError,
+	})
 }

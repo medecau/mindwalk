@@ -7,8 +7,11 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/cosmtrek/mindwalk/internal/adapter"
 	"github.com/cosmtrek/mindwalk/internal/adapter/claudecode"
+	"github.com/cosmtrek/mindwalk/internal/adapter/codex"
 	"github.com/cosmtrek/mindwalk/internal/citymap"
+	"github.com/cosmtrek/mindwalk/internal/model"
 	"github.com/cosmtrek/mindwalk/internal/server"
 )
 
@@ -44,17 +47,19 @@ func serve(args []string) error {
 	fs := flag.NewFlagSet("serve", flag.ExitOnError)
 	port := fs.Int("port", 0, "port to bind on 127.0.0.1")
 	claudeDir := fs.String("claude-dir", claudecode.DefaultDir(), "Claude Code projects directory")
+	codexDir := fs.String("codex-dir", codex.DefaultDir(), "Codex sessions directory")
 	dev := fs.Bool("dev", false, "prefer web/dist from the working tree")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	return server.New(server.Config{Port: *port, ClaudeDir: *claudeDir, Dev: *dev}).Start(true)
+	return server.New(server.Config{Port: *port, ClaudeDir: *claudeDir, CodexDir: *codexDir, Dev: *dev}).Start(true)
 }
 
 func open(args []string) error {
 	fs := flag.NewFlagSet("open", flag.ExitOnError)
 	port := fs.Int("port", 0, "port to bind on 127.0.0.1")
 	claudeDir := fs.String("claude-dir", claudecode.DefaultDir(), "Claude Code projects directory")
+	codexDir := fs.String("codex-dir", codex.DefaultDir(), "Codex sessions directory")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -65,7 +70,7 @@ func open(args []string) error {
 	if err != nil {
 		return err
 	}
-	return server.New(server.Config{Port: *port, ClaudeDir: *claudeDir, OpenSession: session}).Start(true)
+	return server.New(server.Config{Port: *port, ClaudeDir: *claudeDir, CodexDir: *codexDir, OpenSession: session}).Start(true)
 }
 
 func build(args []string) error {
@@ -91,11 +96,26 @@ func trace(args []string) error {
 	if len(positional) != 1 {
 		return fmt.Errorf("usage: mindwalk trace <session.jsonl> [-o out]")
 	}
-	tr, err := (claudecode.Adapter{}).Parse(positional[0])
+	tr, err := parseTrace(positional[0])
 	if err != nil {
 		return err
 	}
 	return writeJSON(out, tr)
+}
+
+func parseTrace(path string) (*model.Trace, error) {
+	var lastErr error
+	for _, source := range []adapter.Source{claudecode.Adapter{}, codex.Adapter{}} {
+		trace, err := source.Parse(path)
+		if err == nil {
+			return trace, nil
+		}
+		lastErr = err
+	}
+	if lastErr != nil {
+		return nil, lastErr
+	}
+	return nil, fmt.Errorf("no session adapters configured")
 }
 
 func parseOutputArgs(args []string) ([]string, string, error) {
@@ -138,8 +158,8 @@ func usage() {
 
 Usage:
   mindwalk                        serve on a random local port and open the UI
-  mindwalk serve [--port N] [--claude-dir DIR]
-  mindwalk open <session.jsonl>   open a specific Claude Code session
+  mindwalk serve [--port N] [--claude-dir DIR] [--codex-dir DIR]
+  mindwalk open <session.jsonl>   open a specific Claude Code or Codex session
   mindwalk build <repo> [-o out]  write citymap.json
   mindwalk trace <session> [-o out] write trace.json`)
 }
