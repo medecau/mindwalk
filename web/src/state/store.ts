@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import type { CityMap, SessionMeta, Trace } from "../types";
+import { loadFilters, saveFilters } from "./filters";
 
 export type SceneView = "tree" | "terrain";
 
@@ -13,6 +14,8 @@ interface AppState {
   view: SceneView;
   loading: boolean;
   error?: string;
+  hideEmpty: boolean;
+  harnessFilter?: string;
   setView: (view: SceneView) => void;
   setSessions: (sessions: SessionMeta[]) => void;
   setActiveSession: (id: string) => void;
@@ -21,13 +24,19 @@ interface AppState {
   setSelectedPath: (path?: string) => void;
   setLoading: (loading: boolean) => void;
   setError: (error?: string) => void;
+  setHideEmpty: (hideEmpty: boolean) => void;
+  setHarnessFilter: (harness?: string) => void;
 }
 
-export const useAppStore = create<AppState>((set) => ({
+const initialFilters = loadFilters();
+
+export const useAppStore = create<AppState>((set, get) => ({
   sessions: [],
   currentSeq: 0,
   view: "tree",
   loading: false,
+  hideEmpty: initialFilters.hideEmpty,
+  harnessFilter: initialFilters.harness,
   setView: (view) => set({ view }),
   setSessions: (sessions) => set({ sessions }),
   setActiveSession: (activeSessionId) => set({ activeSessionId, trace: undefined, city: undefined, currentSeq: 0 }),
@@ -35,5 +44,13 @@ export const useAppStore = create<AppState>((set) => ({
   setCurrentSeq: (currentSeq) => set({ currentSeq }),
   setSelectedPath: (selectedPath) => set({ selectedPath }),
   setLoading: (loading) => set({ loading }),
-  setError: (error) => set({ error })
+  setError: (error) => set({ error }),
+  setHideEmpty: (hideEmpty) => {
+    set({ hideEmpty });
+    saveFilters({ hideEmpty, harness: get().harnessFilter });
+  },
+  setHarnessFilter: (harnessFilter) => {
+    set({ harnessFilter });
+    saveFilters({ hideEmpty: get().hideEmpty, harness: harnessFilter });
+  }
 }));

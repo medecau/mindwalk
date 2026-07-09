@@ -3,6 +3,7 @@ import { getCityMap, getTrace, listSessions } from "./api/client";
 import { PlaybackEngine } from "./playback/reducer";
 import { CityScene } from "./scene/CityScene";
 import { TreeScene } from "./scene/TreeScene";
+import { sessionVisible } from "./state/filters";
 import { useAppStore } from "./state/store";
 import { Hud } from "./ui/Hud";
 import { Inspector } from "./ui/Inspector";
@@ -21,6 +22,8 @@ export default function App() {
     view,
     loading,
     error,
+    hideEmpty,
+    harnessFilter,
     setView,
     setSessions,
     setActiveSession,
@@ -28,7 +31,9 @@ export default function App() {
     setCurrentSeq,
     setSelectedPath,
     setLoading,
-    setError
+    setError,
+    setHideEmpty,
+    setHarnessFilter
   } = useAppStore();
   const urlSessionConsumed = useRef(false);
 
@@ -50,7 +55,12 @@ export default function App() {
       }
       // a session can disappear between scans; fall back instead of pinning a dead id
       const stillListed = activeSessionId !== undefined && data.some((session) => session.id === activeSessionId);
-      const next = preferred ?? (stillListed ? activeSessionId : data[0]?.id);
+      // prefer a session the rail will actually show; if the filters hide
+      // everything, the newest session still beats a blank stage
+      const fallback = (
+        data.find((session) => sessionVisible(session, { hideEmpty, harness: harnessFilter })) ?? data[0]
+      )?.id;
+      const next = preferred ?? (stillListed ? activeSessionId : fallback);
       if (next && next !== activeSessionId) {
         setActiveSession(next);
       }
@@ -59,7 +69,7 @@ export default function App() {
     } finally {
       setLoading(false);
     }
-  }, [activeSessionId, setActiveSession, setError, setLoading, setSessions]);
+  }, [activeSessionId, harnessFilter, hideEmpty, setActiveSession, setError, setLoading, setSessions]);
 
   useEffect(() => {
     void refresh();
@@ -103,8 +113,12 @@ export default function App() {
         sessions={sessions}
         activeId={activeSessionId}
         loading={loading}
+        hideEmpty={hideEmpty}
+        harnessFilter={harnessFilter}
         onSelect={setActiveSession}
         onRefresh={refresh}
+        onHideEmptyChange={setHideEmpty}
+        onHarnessFilterChange={setHarnessFilter}
       />
       <section className="stage">
         <div className="viewport">
@@ -128,8 +142,8 @@ export default function App() {
               <div className="card">
                 <h2>No sessions found</h2>
                 <p>
-                  mindwalk scans <code>~/.claude/projects</code> for Claude Code traces. Run a session there, then
-                  refresh.
+                  mindwalk scans <code>~/.claude/projects</code> and <code>~/.codex/sessions</code> for agent
+                  traces. Run a session there, then refresh.
                 </p>
               </div>
             </div>

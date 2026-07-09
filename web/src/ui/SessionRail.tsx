@@ -1,32 +1,49 @@
-import { RefreshCw, Search } from "lucide-react";
+import { Eye, EyeOff, RefreshCw, Search } from "lucide-react";
 import { memo, useMemo, useState } from "react";
+import { sessionVisible } from "../state/filters";
 import type { SessionMeta } from "../types";
 
 interface SessionRailProps {
   sessions: SessionMeta[];
   activeId?: string;
   loading: boolean;
+  hideEmpty: boolean;
+  harnessFilter?: string;
   onSelect: (id: string) => void;
   onRefresh: () => void;
+  onHideEmptyChange: (hide: boolean) => void;
+  onHarnessFilterChange: (harness?: string) => void;
 }
 
 // memo: the app re-renders every playback tick; the rail's props only change
-// on scans and session switches
+// on scans, session switches, and filter changes
 export const SessionRail = memo(function SessionRail({
   sessions,
   activeId,
   loading,
+  hideEmpty,
+  harnessFilter,
   onSelect,
-  onRefresh
+  onRefresh,
+  onHideEmptyChange,
+  onHarnessFilterChange
 }: SessionRailProps) {
   const [query, setQuery] = useState("");
+  const harnesses = useMemo(() => [...new Set(sessions.map((s) => s.harness))].sort(), [sessions]);
+  const emptyCount = useMemo(() => sessions.filter((s) => s.eventCount === 0).length, [sessions]);
+  // a persisted filter can name a harness with no sessions this scan; treating
+  // it as "all" avoids an empty list with no visible chip to clear it
+  const effectiveHarness = harnessFilter && harnesses.includes(harnessFilter) ? harnessFilter : undefined;
   const shown = useMemo(() => {
     const q = query.trim().toLowerCase();
-    if (!q) return sessions;
-    return sessions.filter((session) =>
-      `${session.title ?? ""} ${session.id} ${session.gitBranch ?? ""}`.toLowerCase().includes(q)
-    );
-  }, [sessions, query]);
+    return sessions.filter((session) => {
+      if (!sessionVisible(session, { hideEmpty, harness: effectiveHarness }, activeId)) return false;
+      if (!q) return true;
+      return `${session.title ?? ""} ${session.id} ${session.gitBranch ?? ""} ${session.harness}`
+        .toLowerCase()
+        .includes(q);
+    });
+  }, [sessions, query, hideEmpty, effectiveHarness, activeId]);
 
   return (
     <aside className="session-rail">
@@ -38,39 +55,108 @@ export const SessionRail = memo(function SessionRail({
           <RefreshCw size={15} />
         </button>
       </div>
-      <label className="rail-filter">
-        <Search size={14} aria-hidden />
-        <input
-          type="search"
-          placeholder="Filter sessions"
-          value={query}
-          onChange={(e) => setQuery(e.currentTarget.value)}
-          aria-label="Filter sessions"
-        />
-      </label>
+      <div className="rail-controls">
+        <label className="rail-filter">
+          <Search size={14} aria-hidden />
+          <input
+            type="search"
+            placeholder="Filter sessions"
+            value={query}
+            onChange={(e) => setQuery(e.currentTarget.value)}
+            aria-label="Filter sessions"
+          />
+        </label>
+        {harnesses.length > 1 || emptyCount > 0 ? (
+          <div className="rail-chips" role="group" aria-label="Session filters">
+            {harnesses.length > 1 ? (
+              <>
+                <button
+                  className={effectiveHarness === undefined ? "chip active" : "chip"}
+                  onClick={() => onHarnessFilterChange(undefined)}
+                >
+                  all
+                </button>
+                {harnesses.map((harness) => (
+                  <button
+                    key={harness}
+                    className={effectiveHarness === harness ? "chip active" : "chip"}
+                    onClick={() => onHarnessFilterChange(harness)}
+                  >
+                    {harnessLabel(harness)}
+                  </button>
+                ))}
+              </>
+            ) : null}
+            {emptyCount > 0 ? (
+              <button
+                className={hideEmpty ? "eye-toggle" : "eye-toggle showing"}
+                onClick={() => onHideEmptyChange(!hideEmpty)}
+                aria-pressed={!hideEmpty}
+                title={
+                  hideEmpty ? `Show ${emptyCount} empty sessions` : `Hide ${emptyCount} empty sessions`
+                }
+                aria-label={
+                  hideEmpty ? `Show ${emptyCount} empty sessions` : `Hide ${emptyCount} empty sessions`
+                }
+              >
+                {hideEmpty ? <EyeOff size={13} aria-hidden /> : <Eye size={13} aria-hidden />}
+              </button>
+            ) : null}
+          </div>
+        ) : null}
+      </div>
       <div className="session-list" aria-busy={loading}>
         {shown.map((session) => (
           <button
-            key={session.id}
+            // codex resume rollouts reuse the session id across files, so
+            // only the path is unique per row
+            key={session.path}
             className={session.id === activeId ? "session-row active" : "session-row"}
             onClick={() => onSelect(session.id)}
           >
             <span className="session-title">{session.title || session.id}</span>
             <span className="session-meta">
-              {session.eventCount} calls
-              {session.gitBranch ? ` · ${session.gitBranch}` : ""}
-              {session.endedAt ? ` · ${shortDate(session.endedAt)}` : ""}
+              <span className={`harness-badge ${harnessClass(session.harness)}`}>
+                {harnessLabel(session.harness)}
+              </span>
+              <span>
+                {session.eventCount} calls
+                {session.gitBranch ? ` · ${session.gitBranch}` : ""}
+                {session.endedAt ? ` · ${shortDate(session.endedAt)}` : ""}
+              </span>
             </span>
           </button>
         ))}
         {shown.length === 0 ? <p className="muted" style={{ padding: "10px 8px" }}>No matching sessions.</p> : null}
       </div>
       <div className="rail-foot">
-        {sessions.length} session{sessions.length === 1 ? "" : "s"}
+        {shown.length === sessions.length
+          ? `${sessions.length} session${sessions.length === 1 ? "" : "s"}`
+          : `${shown.length} of ${sessions.length} sessions`}
       </div>
     </aside>
   );
 });
+
+function harnessLabel(harness: string): string {
+  switch (harness) {
+    case "claude-code":
+      return "claude";
+    default:
+      return harness;
+  }
+}
+
+function harnessClass(harness: string): string {
+  switch (harness) {
+    case "claude-code":
+      return "claude";
+    case "codex":
+      return "codex";
+    default:
+      return "other";
+  }
+}
 
 function shortDate(iso: string): string {
   const d = new Date(iso);
