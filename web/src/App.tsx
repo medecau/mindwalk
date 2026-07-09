@@ -148,7 +148,9 @@ export default function App() {
               </div>
             </div>
           ) : null}
-          {loading ? <div className="toast">Reading trace…</div> : null}
+          {loading ? (
+            <div className="toast">{sessions.length === 0 ? "Scanning sessions…" : "Reading trace…"}</div>
+          ) : null}
           {error ? <div className="toast error">{error}</div> : null}
         </div>
         <Timeline trace={trace} currentSeq={currentSeq} onChange={setCurrentSeq} />

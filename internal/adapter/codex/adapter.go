@@ -8,6 +8,8 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/cosmtrek/mindwalk/internal/adapter"
 	"github.com/cosmtrek/mindwalk/internal/model"
@@ -424,26 +426,51 @@ func (a Adapter) titleFor(id string) string {
 	if index == "" {
 		return ""
 	}
-	f, err := os.Open(index)
+	return loadTitleIndex(index)[id]
+}
+
+// titleIndexCache holds the parsed session index; summarizing a whole
+// sessions directory looks up a title per file, so re-reading the index
+// each time would make the scan quadratic
+var titleIndexCache struct {
+	mu      sync.Mutex
+	path    string
+	size    int64
+	modTime time.Time
+	titles  map[string]string
+}
+
+func loadTitleIndex(path string) map[string]string {
+	info, err := os.Stat(path)
 	if err != nil {
-		return ""
+		return nil
+	}
+	titleIndexCache.mu.Lock()
+	defer titleIndexCache.mu.Unlock()
+	if titleIndexCache.path == path && titleIndexCache.size == info.Size() && titleIndexCache.modTime.Equal(info.ModTime()) {
+		return titleIndexCache.titles
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return nil
 	}
 	defer f.Close()
 
-	var title string
+	titles := map[string]string{}
 	_ = adapter.ReadJSONLines(f, func(data []byte) {
-		if title != "" {
-			return
-		}
 		var row struct {
 			ID         string `json:"id"`
 			ThreadName string `json:"thread_name"`
 		}
-		if json.Unmarshal(data, &row) == nil && row.ID == id {
-			title = row.ThreadName
+		if json.Unmarshal(data, &row) == nil && row.ID != "" && row.ThreadName != "" {
+			titles[row.ID] = row.ThreadName
 		}
 	})
-	return title
+	titleIndexCache.path = path
+	titleIndexCache.size = info.Size()
+	titleIndexCache.modTime = info.ModTime()
+	titleIndexCache.titles = titles
+	return titles
 }
 
 func (a Adapter) indexPath() string {

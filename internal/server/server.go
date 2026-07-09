@@ -42,6 +42,7 @@ type Server struct {
 	cfg       Config
 	adapters  []adapter.Source
 	mu        sync.Mutex
+	scanMu    sync.Mutex
 	sessions  []model.SessionMeta
 	sessionAt time.Time
 	traces    map[string]*model.Trace
@@ -99,6 +100,9 @@ func (s *Server) Start(openBrowser bool) error {
 		return err
 	}
 	addr := "http://" + ln.Addr().String()
+	// warm the session scan so the first page load doesn't wait on a cold
+	// walk over every session file
+	go func() { _, _ = s.listSessions() }()
 	if openBrowser {
 		pageURL := addr
 		if s.cfg.OpenSession != "" {
@@ -151,6 +155,10 @@ func (s *Server) handleSessionResource(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) listSessions() ([]model.SessionMeta, error) {
+	// scanMu serializes scans so callers arriving mid-scan wait for the
+	// in-flight result instead of duplicating the walk
+	s.scanMu.Lock()
+	defer s.scanMu.Unlock()
 	s.mu.Lock()
 	if s.sessions != nil && time.Since(s.sessionAt) < sessionListTTL {
 		sessions := append([]model.SessionMeta(nil), s.sessions...)
@@ -190,8 +198,13 @@ func (s *Server) listSessions() ([]model.SessionMeta, error) {
 }
 
 func (s *Server) scanSessions() ([]model.SessionMeta, error) {
+	type sessionFile struct {
+		source adapter.Source
+		path   string
+		info   fs.FileInfo
+	}
 	seen := map[string]bool{}
-	var sessions []model.SessionMeta
+	var files []sessionFile
 	for _, source := range s.adapters {
 		dir := source.SessionDir()
 		if dir == "" {
@@ -214,16 +227,53 @@ func (s *Server) scanSessions() ([]model.SessionMeta, error) {
 			if err != nil {
 				return nil
 			}
-			key := summaryKey(source, path)
-			seen[key] = true
-			meta, err := s.summarizeCached(source, path, info)
-			if err == nil {
-				sessions = append(sessions, meta)
-			}
+			seen[summaryKey(source, path)] = true
+			files = append(files, sessionFile{source: source, path: path, info: info})
 			return nil
 		})
 		if err != nil {
 			return nil, err
+		}
+	}
+
+	// summarizing reads every uncached session file; spread the parsing
+	// across cores so a cold scan doesn't serialize gigabytes of JSONL
+	results := make([]*model.SessionMeta, len(files))
+	workers := runtime.NumCPU()
+	if workers > len(files) {
+		workers = len(files)
+	}
+	if workers > 1 {
+		jobs := make(chan int)
+		var wg sync.WaitGroup
+		for w := 0; w < workers; w++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				for i := range jobs {
+					if meta, err := s.summarizeCached(files[i].source, files[i].path, files[i].info); err == nil {
+						results[i] = &meta
+					}
+				}
+			}()
+		}
+		for i := range files {
+			jobs <- i
+		}
+		close(jobs)
+		wg.Wait()
+	} else {
+		for i := range files {
+			if meta, err := s.summarizeCached(files[i].source, files[i].path, files[i].info); err == nil {
+				results[i] = &meta
+			}
+		}
+	}
+
+	sessions := make([]model.SessionMeta, 0, len(files))
+	for _, meta := range results {
+		if meta != nil {
+			sessions = append(sessions, *meta)
 		}
 	}
 	s.pruneSummaryCache(seen)

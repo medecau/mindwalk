@@ -127,7 +127,11 @@ export const SessionRail = memo(function SessionRail({
             </span>
           </button>
         ))}
-        {shown.length === 0 ? <p className="muted" style={{ padding: "10px 8px" }}>No matching sessions.</p> : null}
+        {shown.length === 0 ? (
+          <p className="muted" style={{ padding: "10px 8px" }}>
+            {loading && sessions.length === 0 ? "Scanning sessions…" : "No matching sessions."}
+          </p>
+        ) : null}
       </div>
       <div className="rail-foot">
         {shown.length === sessions.length
