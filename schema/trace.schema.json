@@ -1,0 +1,113 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://mindwalk.local/schema/trace.schema.json",
+  "title": "mindwalk trace",
+  "type": "object",
+  "required": ["version", "session", "events", "marks", "stats"],
+  "properties": {
+    "version": { "const": 1 },
+    "session": {
+      "type": "object",
+      "required": ["id", "harness", "eventCount"],
+      "properties": {
+        "id": { "type": "string" },
+        "harness": { "type": "string" },
+        "model": { "type": "string" },
+        "title": { "type": "string" },
+        "cwd": { "type": "string" },
+        "commit": { "type": "string" },
+        "startedAt": { "type": "string" },
+        "endedAt": { "type": "string" },
+        "eventCount": { "type": "integer", "minimum": 0 },
+        "path": { "type": "string" }
+      },
+      "additionalProperties": false
+    },
+    "events": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["seq", "tool", "action", "targets", "resultBytes", "isError", "summary"],
+        "properties": {
+          "seq": { "type": "integer", "minimum": 0 },
+          "ts": { "type": "string" },
+          "tool": { "type": "string" },
+          "action": { "enum": ["search", "read", "edit", "exec", "verify", "other"] },
+          "targets": {
+            "type": "array",
+            "items": { "$ref": "#/$defs/target" }
+          },
+          "outside": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["scope", "path"],
+              "properties": {
+                "scope": { "enum": ["home", "tmp", "other"] },
+                "path": { "type": "string" }
+              },
+              "additionalProperties": false
+            }
+          },
+          "resultBytes": { "type": "integer", "minimum": 0 },
+          "isError": { "type": "boolean" },
+          "summary": { "type": "string" }
+        },
+        "additionalProperties": false
+      }
+    },
+    "marks": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["seq", "type"],
+        "properties": {
+          "seq": { "type": "integer", "minimum": 0 },
+          "type": { "enum": ["compaction", "user-message", "subagent"] },
+          "note": { "type": "string" }
+        },
+        "additionalProperties": false
+      }
+    },
+    "stats": {
+      "type": "object",
+      "required": ["filesInRepo", "fovea", "parafovea", "edited", "eventsBeforeFirstEdit", "regressionRate", "errorRate"],
+      "properties": {
+        "filesInRepo": { "type": "integer", "minimum": 0 },
+        "fovea": { "type": "integer", "minimum": 0 },
+        "parafovea": { "type": "integer", "minimum": 0 },
+        "edited": { "type": "integer", "minimum": 0 },
+        "eventsBeforeFirstEdit": { "type": "integer", "minimum": 0 },
+        "regressionRate": { "type": "number", "minimum": 0 },
+        "errorRate": { "type": "number", "minimum": 0 }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "target": {
+      "type": "object",
+      "required": ["path", "touch"],
+      "properties": {
+        "path": { "type": "string" },
+        "fileId": { "type": "integer", "minimum": 0 },
+        "touch": { "enum": ["hit", "read", "edit"] },
+        "lines": {
+          "type": "array",
+          "items": {
+            "type": "array",
+            "prefixItems": [
+              { "type": "integer", "minimum": 1 },
+              { "type": "integer", "minimum": 1 }
+            ],
+            "minItems": 2,
+            "maxItems": 2
+          }
+        },
+        "weak": { "type": "boolean" }
+      },
+      "additionalProperties": false
+    }
+  }
+}

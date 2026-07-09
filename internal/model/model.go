@@ -1,0 +1,122 @@
+package model
+
+type Rect struct {
+	X float64 `json:"x"`
+	Z float64 `json:"z"`
+	W float64 `json:"w"`
+	D float64 `json:"d"`
+}
+
+type RepoMeta struct {
+	Root        string `json:"root"`
+	Commit      string `json:"commit,omitempty"`
+	Dirty       bool   `json:"dirty"`
+	GeneratedAt string `json:"generatedAt"`
+}
+
+type CityMap struct {
+	Version int        `json:"version"`
+	Repo    RepoMeta   `json:"repo"`
+	Files   []CityFile `json:"files"`
+	Dirs    []CityDir  `json:"dirs"`
+	Layout  LayoutMeta `json:"layout"`
+}
+
+type CityFile struct {
+	ID    int    `json:"id"`
+	Path  string `json:"path"`
+	Dir   string `json:"dir"`
+	Lines int    `json:"lines"`
+	Bytes int64  `json:"bytes"`
+	Lang  string `json:"lang,omitempty"`
+	Rect  Rect   `json:"rect"`
+	Ghost bool   `json:"ghost"`
+}
+
+type CityDir struct {
+	Path      string `json:"path"`
+	Depth     int    `json:"depth"`
+	Rect      Rect   `json:"rect"`
+	FileCount int    `json:"fileCount"`
+	Lines     int    `json:"lines"`
+}
+
+type LayoutMeta struct {
+	Algorithm string `json:"algorithm"`
+	Weight    string `json:"weight"`
+}
+
+type Trace struct {
+	Version int          `json:"version"`
+	Session TraceSession `json:"session"`
+	Events  []Event      `json:"events"`
+	Marks   []Mark       `json:"marks"`
+	Stats   Stats        `json:"stats"`
+}
+
+type TraceSession struct {
+	ID         string `json:"id"`
+	Harness    string `json:"harness"`
+	Model      string `json:"model,omitempty"`
+	Title      string `json:"title,omitempty"`
+	Cwd        string `json:"cwd,omitempty"`
+	Commit     string `json:"commit,omitempty"`
+	StartedAt  string `json:"startedAt,omitempty"`
+	EndedAt    string `json:"endedAt,omitempty"`
+	EventCount int    `json:"eventCount"`
+	Path       string `json:"path,omitempty"`
+}
+
+type Event struct {
+	Seq         int            `json:"seq"`
+	Timestamp   string         `json:"ts,omitempty"`
+	Tool        string         `json:"tool"`
+	Action      string         `json:"action"`
+	Targets     []Target       `json:"targets"`
+	Outside     []OutsideTouch `json:"outside,omitempty"`
+	ResultBytes int            `json:"resultBytes"`
+	IsError     bool           `json:"isError"`
+	Summary     string         `json:"summary"`
+}
+
+type Target struct {
+	Path   string   `json:"path"`
+	FileID *int     `json:"fileId,omitempty"`
+	Touch  string   `json:"touch"`
+	Lines  [][2]int `json:"lines,omitempty"`
+	Weak   bool     `json:"weak,omitempty"`
+}
+
+type OutsideTouch struct {
+	Scope string `json:"scope"`
+	Path  string `json:"path"`
+}
+
+type Mark struct {
+	Seq  int    `json:"seq"`
+	Type string `json:"type"`
+	Note string `json:"note,omitempty"`
+}
+
+type Stats struct {
+	FilesInRepo           int     `json:"filesInRepo"`
+	Fovea                 int     `json:"fovea"`
+	Parafovea             int     `json:"parafovea"`
+	Edited                int     `json:"edited"`
+	EventsBeforeFirstEdit int     `json:"eventsBeforeFirstEdit"`
+	RegressionRate        float64 `json:"regressionRate"`
+	ErrorRate             float64 `json:"errorRate"`
+}
+
+type SessionMeta struct {
+	ID         string `json:"id"`
+	Harness    string `json:"harness"`
+	Title      string `json:"title,omitempty"`
+	Path       string `json:"path"`
+	Cwd        string `json:"cwd,omitempty"`
+	Model      string `json:"model,omitempty"`
+	GitBranch  string `json:"gitBranch,omitempty"`
+	StartedAt  string `json:"startedAt,omitempty"`
+	EndedAt    string `json:"endedAt,omitempty"`
+	EventCount int    `json:"eventCount"`
+}
