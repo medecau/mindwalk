@@ -344,10 +344,32 @@ export function TreeScene({ city, playback, selectedPath, onSelect }: TreeSceneP
     const camera = cameraRef.current;
     const controls = controlsRef.current;
     if (camera && controls) {
-      camera.position.set(size * 0.3, size * 0.66, size * 0.47);
+      // keep the canonical viewing direction, but pull back exactly far
+      // enough that every leaf fits the viewport's frustum — nominal radius
+      // ignores the aspect ratio and overflows short windows
+      const dir = new THREE.Vector3(0.3, 0.66, 0.47).normalize();
+      const forward = dir.clone().negate();
+      const right = new THREE.Vector3().crossVectors(forward, new THREE.Vector3(0, 1, 0)).normalize();
+      const up = new THREE.Vector3().crossVectors(right, forward);
+      const tanV = Math.tan(THREE.MathUtils.degToRad(camera.fov) / 2);
+      const tanH = tanV * camera.aspect;
+      const point = new THREE.Vector3();
+      let distance = 0;
+      for (const pos of layout.leaf.values()) {
+        point.set(pos.x, LEAF_Y, pos.z);
+        const depth = point.dot(forward);
+        distance = Math.max(
+          distance,
+          Math.abs(point.dot(right)) / tanH - depth,
+          Math.abs(point.dot(up)) / tanV - depth
+        );
+      }
+      // breathing room so edge leaves clear the HUD overlays
+      distance *= 1.12;
+      camera.position.copy(dir).multiplyScalar(distance);
       controls.target.set(0, 0, 0);
       controls.minDistance = size * 0.15;
-      controls.maxDistance = size * 2.4;
+      controls.maxDistance = Math.max(size * 2.4, distance * 1.2);
       controls.update();
     }
 
