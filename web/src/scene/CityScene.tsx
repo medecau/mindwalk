@@ -55,7 +55,7 @@ export function CityScene({ city, playback, selectedPath, onSelect }: CitySceneP
   const boundsRef = useRef({ cx: 0, cz: 0, size: 120 });
 
   const bounds = useMemo(() => {
-    if (!city || city.files.length === 0) return { cx: 0, cz: 0, size: 120 };
+    if (!city || city.files.length === 0) return { cx: 0, cz: 0, size: 120, halfW: 60, halfD: 60 };
     let minX = Infinity;
     let maxX = -Infinity;
     let minZ = Infinity;
@@ -66,7 +66,13 @@ export function CityScene({ city, playback, selectedPath, onSelect }: CitySceneP
       minZ = Math.min(minZ, file.rect.z);
       maxZ = Math.max(maxZ, file.rect.z + file.rect.d);
     }
-    return { cx: (minX + maxX) / 2, cz: (minZ + maxZ) / 2, size: Math.max(maxX - minX, maxZ - minZ, 60) };
+    return {
+      cx: (minX + maxX) / 2,
+      cz: (minZ + maxZ) / 2,
+      size: Math.max(maxX - minX, maxZ - minZ, 60),
+      halfW: (maxX - minX) / 2,
+      halfD: (maxZ - minZ) / 2
+    };
   }, [city]);
 
   useEffect(() => {
@@ -330,10 +336,35 @@ export function CityScene({ city, playback, selectedPath, onSelect }: CitySceneP
     const camera = cameraRef.current;
     const controls = controlsRef.current;
     if (camera && controls) {
-      camera.position.set(size * 0.46, size * 1.08, size * 0.72);
+      // keep the canonical viewing direction, but pull back exactly far
+      // enough that the whole plain fits the viewport's frustum — the fixed
+      // size multiplier ignores the aspect ratio and overflows short windows
+      const dir = new THREE.Vector3(0.46, 1.08, 0.72).normalize();
+      const forward = dir.clone().negate();
+      const right = new THREE.Vector3().crossVectors(forward, new THREE.Vector3(0, 1, 0)).normalize();
+      const up = new THREE.Vector3().crossVectors(right, forward);
+      const tanV = Math.tan(THREE.MathUtils.degToRad(camera.fov) / 2);
+      const tanH = tanV * camera.aspect;
+      const point = new THREE.Vector3();
+      let distance = 0;
+      for (const sx of [-1, 1]) {
+        for (const sz of [-1, 1]) {
+          point.set(sx * bounds.halfW, 0, sz * bounds.halfD);
+          const depth = point.dot(forward);
+          distance = Math.max(
+            distance,
+            Math.abs(point.dot(right)) / tanH - depth,
+            Math.abs(point.dot(up)) / tanV - depth
+          );
+        }
+      }
+      // breathing room so map edges clear the HUD overlays; floor keeps
+      // near-empty maps from parking the camera on the ground
+      distance = Math.max(distance * 1.12, size * 0.6);
+      camera.position.copy(dir).multiplyScalar(distance);
       controls.target.set(0, 0, 0);
       controls.minDistance = size * 0.18;
-      controls.maxDistance = size * 2.6;
+      controls.maxDistance = Math.max(size * 2.6, distance * 1.2);
       controls.update();
     }
 
