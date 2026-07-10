@@ -3,7 +3,7 @@ import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import type { CityFile, CityMap, Touch } from "../types";
 import type { FilePlayback } from "../playback/reducer";
-import { disposeGroup, EMBER, prefersReducedMotion, SKY, touchColors } from "./sceneUtils";
+import { disposeGroup, EMBER, fitDistance, prefersReducedMotion, SKY, touchColors } from "./sceneUtils";
 import { fireflyTexture } from "./textures";
 import { TrailRenderer } from "./trail";
 
@@ -53,6 +53,9 @@ export function CityScene({ city, playback, selectedPath, onSelect }: CitySceneP
   const frameRef = useRef<number | null>(null);
   const reducedRef = useRef(false);
   const boundsRef = useRef({ cx: 0, cz: 0, size: 120 });
+  // camera fit deferred while the viewport reports no size (hidden pane,
+  // background tab); resize retries it instead of leaving the camera at NaN
+  const fitPendingRef = useRef<(() => boolean) | null>(null);
 
   const bounds = useMemo(() => {
     if (!city || city.files.length === 0) return { cx: 0, cz: 0, size: 120, halfW: 60, halfD: 60 };
@@ -85,7 +88,7 @@ export function CityScene({ city, playback, selectedPath, onSelect }: CitySceneP
     scene.background = SKY;
     sceneRef.current = scene;
 
-    const camera = new THREE.PerspectiveCamera(38, host.clientWidth / host.clientHeight, 0.1, 2400);
+    const camera = new THREE.PerspectiveCamera(38, host.clientWidth / host.clientHeight || 1, 0.1, 2400);
     camera.position.set(70, 130, 100);
     cameraRef.current = camera;
 
@@ -153,6 +156,7 @@ export function CityScene({ city, playback, selectedPath, onSelect }: CitySceneP
       renderer.setSize(w, h);
       camera.aspect = w / h;
       camera.updateProjectionMatrix();
+      if (fitPendingRef.current?.()) fitPendingRef.current = null;
     };
     const observer = new ResizeObserver(resize);
     observer.observe(host);
@@ -333,42 +337,36 @@ export function CityScene({ city, playback, selectedPath, onSelect }: CitySceneP
     cityGroupRef.current = group;
     scene.add(group);
 
-    const camera = cameraRef.current;
-    const controls = controlsRef.current;
-    if (camera && controls) {
-      // keep the canonical viewing direction, but pull back exactly far
-      // enough that the whole plain fits the viewport's frustum — the fixed
-      // size multiplier ignores the aspect ratio and overflows short windows
+    // keep the canonical viewing direction, but pull back exactly far
+    // enough that the whole plain fits the viewport's frustum — the fixed
+    // size multiplier ignores the aspect ratio and overflows short windows
+    const fitView = (): boolean => {
+      const camera = cameraRef.current;
+      const controls = controlsRef.current;
+      if (!camera || !controls) return true;
       const dir = new THREE.Vector3(0.46, 1.08, 0.72).normalize();
-      const forward = dir.clone().negate();
-      const right = new THREE.Vector3().crossVectors(forward, new THREE.Vector3(0, 1, 0)).normalize();
-      const up = new THREE.Vector3().crossVectors(right, forward);
-      const tanV = Math.tan(THREE.MathUtils.degToRad(camera.fov) / 2);
-      const tanH = tanV * camera.aspect;
-      const point = new THREE.Vector3();
-      let distance = 0;
+      const corners: THREE.Vector3[] = [];
       for (const sx of [-1, 1]) {
         for (const sz of [-1, 1]) {
-          point.set(sx * bounds.halfW, 0, sz * bounds.halfD);
-          const depth = point.dot(forward);
-          distance = Math.max(
-            distance,
-            Math.abs(point.dot(right)) / tanH - depth,
-            Math.abs(point.dot(up)) / tanV - depth
-          );
+          corners.push(new THREE.Vector3(sx * bounds.halfW, 0, sz * bounds.halfD));
         }
       }
+      const fitted = fitDistance(camera, dir, corners);
+      if (fitted === null) return false;
       // breathing room so map edges clear the HUD overlays; floor keeps
       // near-empty maps from parking the camera on the ground
-      distance = Math.max(distance * 1.12, size * 0.6);
+      const distance = Math.max(fitted * 1.12, size * 0.6);
       camera.position.copy(dir).multiplyScalar(distance);
       controls.target.set(0, 0, 0);
       controls.minDistance = size * 0.18;
       controls.maxDistance = Math.max(size * 2.6, distance * 1.2);
       controls.update();
-    }
+      return true;
+    };
+    fitPendingRef.current = fitView() ? null : fitView;
 
     return () => {
+      fitPendingRef.current = null;
       disposeGroup(group);
       scene.remove(group);
       cityGroupRef.current = null;

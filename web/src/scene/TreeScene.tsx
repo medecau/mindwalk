@@ -2,8 +2,8 @@ import { useEffect, useMemo, useRef } from "react";
 import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import type { CityFile, CityMap, Touch } from "../types";
-import { touchRank, type FilePlayback } from "../playback/reducer";
-import { disposeGroup, EMBER, prefersReducedMotion, SKY, touchColors } from "./sceneUtils";
+import type { FilePlayback } from "../playback/reducer";
+import { disposeGroup, fitDistance, prefersReducedMotion, SKY, touchColors } from "./sceneUtils";
 import { computeTreeLayout, type TreeLayout } from "./treeLayout";
 import { fireflyTexture, haloTexture, labelTexture } from "./textures";
 import { TrailRenderer } from "./trail";
@@ -18,17 +18,27 @@ interface TreeSceneProps {
 // Firefly tree: the repo is a radial tree — directories fork, files are
 // leaves. The walker is a firefly that lights leaves as it lands; attention
 // depth shows as the pool of light it leaves behind on the ground.
+//
+// One variable, one channel: leaf color says WHAT happened (touch state),
+// halo radius says HOW MUCH (visits), branch brightness says WHERE the
+// light is, and the selection is a shape (ring + beam), never a recolor.
 const colors: Record<Touch | "unvisited" | "ghost" | "selected", THREE.Color> = {
   unvisited: new THREE.Color("#5a6375"),
-  ghost: new THREE.Color("#404552"),
+  ghost: new THREE.Color("#4d5464"),
   ...touchColors
 };
 const EDGE_BASE = new THREE.Color("#3c424f");
+// branches leading to visited leaves brighten, but stay neutral: the branch
+// guides the eye, the leaf carries the classification
+const EDGE_LIT = new THREE.Color("#7d8496");
+// white-hot walker: keeps the firefly apart from edit-amber leaves
+const FIREFLY_HOT = new THREE.Color("#ffeeda");
 const LEAF_Y = 0.7;
 
-function haloRadius(touch: Touch, visits: number): number {
-  const base = touch === "edit" ? 3.4 : touch === "read" ? 2.3 : 1.3;
-  return base * (1 + 0.3 * Math.log2(Math.max(visits, 1)));
+// halo radius encodes revisits only — touch type already lives in the leaf
+// color, and doubling it up here made the radius unreadable
+function haloRadius(visits: number): number {
+  return Math.min(1.8 * (1 + 0.45 * Math.log2(Math.max(visits, 1))), 4.8);
 }
 
 interface HaloSlot {
@@ -37,12 +47,12 @@ interface HaloSlot {
   color: THREE.Color;
 }
 
-// reverse lookup for touchRank: rank → strongest touch at that rank
-const rankTouch: Touch[] = ["hit", "hit", "read", "edit"];
-
 export function TreeScene({ city, playback, selectedPath, onSelect }: TreeSceneProps) {
   const hostRef = useRef<HTMLDivElement | null>(null);
   const leafMeshRef = useRef<THREE.InstancedMesh | null>(null);
+  const ghostMeshRef = useRef<THREE.InstancedMesh | null>(null);
+  const ghostIndexRef = useRef<Map<number, number>>(new Map());
+  const selectionRef = useRef<{ ring: THREE.Mesh; beam: THREE.Mesh } | null>(null);
   const haloMeshRef = useRef<THREE.InstancedMesh | null>(null);
   const edgesRef = useRef<THREE.LineSegments | null>(null);
   const edgeMetaRef = useRef<{ childPath?: string; childFileId?: number; vertexCount: number }[]>([]);
@@ -59,6 +69,9 @@ export function TreeScene({ city, playback, selectedPath, onSelect }: TreeSceneP
   const fireflyRef = useRef<THREE.Sprite | null>(null);
   const frameRef = useRef<number | null>(null);
   const reducedRef = useRef(false);
+  // camera fit deferred while the viewport reports no size (hidden pane,
+  // background tab); resize retries it instead of leaving the camera at NaN
+  const fitPendingRef = useRef<(() => boolean) | null>(null);
 
   const layout = useMemo(() => (city && city.files.length > 0 ? computeTreeLayout(city.files) : null), [city]);
 
@@ -72,7 +85,7 @@ export function TreeScene({ city, playback, selectedPath, onSelect }: TreeSceneP
     scene.background = SKY;
     sceneRef.current = scene;
 
-    const camera = new THREE.PerspectiveCamera(38, host.clientWidth / host.clientHeight, 0.1, 2400);
+    const camera = new THREE.PerspectiveCamera(38, host.clientWidth / host.clientHeight || 1, 0.1, 2400);
     camera.position.set(60, 110, 90);
     cameraRef.current = camera;
 
@@ -145,6 +158,7 @@ export function TreeScene({ city, playback, selectedPath, onSelect }: TreeSceneP
       renderer.setSize(w, h);
       camera.aspect = w / h;
       camera.updateProjectionMatrix();
+      if (fitPendingRef.current?.()) fitPendingRef.current = null;
     };
     const observer = new ResizeObserver(resize);
     observer.observe(host);
@@ -264,35 +278,77 @@ export function TreeScene({ city, playback, selectedPath, onSelect }: TreeSceneP
     edgeMetaRef.current = edgeMeta;
     group.add(edges);
 
-    // leaves: one orb per file, sized by sqrt(lines)
+    // leaves: one orb per file, sized by sqrt(lines) — solid for files on
+    // disk, wireframe for ghosts (touched in the session, gone from the
+    // repo): shape separates them where a third grey never could.
+    // state colors must not fade with distance, so leaf-like materials
+    // opt out of the fog; only the ground plane keeps the depth cue
     const leafGeo = new THREE.SphereGeometry(0.5, 10, 8);
-    const leafMat = new THREE.MeshBasicMaterial({ toneMapped: false });
+    const leafMat = new THREE.MeshBasicMaterial({ toneMapped: false, fog: false });
     const leaves = new THREE.InstancedMesh(leafGeo, leafMat, city.files.length);
     leaves.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(city.files.length * 3), 3);
+    const ghostFiles = city.files.filter((file) => file.ghost);
+    const ghostIndex = new Map<number, number>();
+    ghostFiles.forEach((file, i) => ghostIndex.set(file.id, i));
+    ghostIndexRef.current = ghostIndex;
     const matrix = new THREE.Matrix4();
+    const hidden = new THREE.Matrix4().makeScale(0, 0, 0);
     for (const file of city.files) {
       const pos = layout.leaf.get(file.id);
       if (!pos) continue;
-      let scale = Math.min(0.24 + Math.sqrt(Math.max(file.lines, 1)) * 0.045, 1.05);
-      if (file.ghost) scale *= 0.7;
+      if (file.ghost) {
+        leaves.setMatrixAt(file.id, hidden);
+        continue;
+      }
+      const scale = Math.min(0.24 + Math.sqrt(Math.max(file.lines, 1)) * 0.045, 1.05);
       matrix.compose(new THREE.Vector3(pos.x, LEAF_Y, pos.z), new THREE.Quaternion(), new THREE.Vector3(scale, scale, scale));
       leaves.setMatrixAt(file.id, matrix);
-      leaves.setColorAt(file.id, file.ghost ? colors.ghost : colors.unvisited);
+      leaves.setColorAt(file.id, colors.unvisited);
     }
     leaves.instanceMatrix.needsUpdate = true;
     if (leaves.instanceColor) leaves.instanceColor.needsUpdate = true;
     leafMeshRef.current = leaves;
     group.add(leaves);
 
-    // pools of light under visited leaves
+    let ghosts: THREE.InstancedMesh | null = null;
+    if (ghostFiles.length > 0) {
+      ghosts = new THREE.InstancedMesh(
+        new THREE.SphereGeometry(0.55, 8, 5),
+        new THREE.MeshBasicMaterial({ wireframe: true, transparent: true, opacity: 0.85, toneMapped: false, fog: false }),
+        ghostFiles.length
+      );
+      ghosts.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(ghostFiles.length * 3), 3);
+      for (const file of ghostFiles) {
+        const pos = layout.leaf.get(file.id);
+        const i = ghostIndex.get(file.id)!;
+        if (!pos) {
+          ghosts.setMatrixAt(i, hidden);
+          continue;
+        }
+        const scale = Math.min(0.24 + Math.sqrt(Math.max(file.lines, 1)) * 0.045, 1.05) * 0.8;
+        matrix.compose(new THREE.Vector3(pos.x, LEAF_Y, pos.z), new THREE.Quaternion(), new THREE.Vector3(scale, scale, scale));
+        ghosts.setMatrixAt(i, matrix);
+        ghosts.setColorAt(i, colors.ghost);
+      }
+      ghosts.instanceMatrix.needsUpdate = true;
+      if (ghosts.instanceColor) ghosts.instanceColor.needsUpdate = true;
+      ghosts.raycast = () => undefined;
+      group.add(ghosts);
+    }
+    ghostMeshRef.current = ghosts;
+
+    // pools of light under visited leaves — normal blending with a fixed
+    // alpha: additive stacking burned dense directories into one white
+    // blob and erased the per-file radius
     const halos = new THREE.InstancedMesh(
       new THREE.PlaneGeometry(1, 1),
       new THREE.MeshBasicMaterial({
         map: haloTexture(),
         transparent: true,
-        blending: THREE.AdditiveBlending,
+        opacity: 0.55,
         depthWrite: false,
-        toneMapped: false
+        toneMapped: false,
+        fog: false
       }),
       city.files.length
     );
@@ -311,7 +367,7 @@ export function TreeScene({ city, playback, selectedPath, onSelect }: TreeSceneP
     for (const dir of labeled) {
       const { texture, aspect } = labelTexture(dir.name);
       const sprite = new THREE.Sprite(
-        new THREE.SpriteMaterial({ map: texture, transparent: true, depthWrite: false, toneMapped: false })
+        new THREE.SpriteMaterial({ map: texture, transparent: true, depthWrite: false, toneMapped: false, fog: false })
       );
       const h = dir.depth === 1 ? 2.6 : 1.9;
       sprite.scale.set(h * aspect * 0.58, h * 0.58, 1);
@@ -323,16 +379,50 @@ export function TreeScene({ city, playback, selectedPath, onSelect }: TreeSceneP
     const firefly = new THREE.Sprite(
       new THREE.SpriteMaterial({
         map: fireflyTexture(),
-        color: EMBER,
+        color: FIREFLY_HOT,
         blending: THREE.AdditiveBlending,
         depthWrite: false,
-        transparent: true
+        transparent: true,
+        fog: false
       })
     );
     firefly.userData.baseScale = Math.max(size * 0.026, 2.2);
     firefly.visible = false;
     fireflyRef.current = firefly;
     group.add(firefly);
+
+    // selection is a shape, not a recolor: the ring + beam mark the leaf
+    // while its touch color stays intact
+    const selectionMat = new THREE.MeshBasicMaterial({
+      color: colors.selected,
+      transparent: true,
+      opacity: 0.9,
+      side: THREE.DoubleSide,
+      depthWrite: false,
+      toneMapped: false,
+      fog: false
+    });
+    const ring = new THREE.Mesh(new THREE.RingGeometry(1.2, 1.5, 48), selectionMat);
+    ring.rotation.x = -Math.PI / 2;
+    ring.visible = false;
+    ring.raycast = () => undefined;
+    group.add(ring);
+    const beam = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.05, 0.05, 6, 6, 1, true),
+      new THREE.MeshBasicMaterial({
+        color: colors.selected,
+        transparent: true,
+        opacity: 0.32,
+        blending: THREE.AdditiveBlending,
+        depthWrite: false,
+        toneMapped: false,
+        fog: false
+      })
+    );
+    beam.visible = false;
+    beam.raycast = () => undefined;
+    group.add(beam);
+    selectionRef.current = { ring, beam };
 
     const trail = new TrailRenderer(1.6);
     trailRef.current = trail;
@@ -341,43 +431,37 @@ export function TreeScene({ city, playback, selectedPath, onSelect }: TreeSceneP
     groupRef.current = group;
     scene.add(group);
 
-    const camera = cameraRef.current;
-    const controls = controlsRef.current;
-    if (camera && controls) {
-      // keep the canonical viewing direction, but pull back exactly far
-      // enough that every leaf fits the viewport's frustum — nominal radius
-      // ignores the aspect ratio and overflows short windows
+    // keep the canonical viewing direction, but pull back exactly far
+    // enough that every leaf fits the viewport's frustum — nominal radius
+    // ignores the aspect ratio and overflows short windows
+    const fitView = (): boolean => {
+      const camera = cameraRef.current;
+      const controls = controlsRef.current;
+      if (!camera || !controls) return true;
       const dir = new THREE.Vector3(0.3, 0.66, 0.47).normalize();
-      const forward = dir.clone().negate();
-      const right = new THREE.Vector3().crossVectors(forward, new THREE.Vector3(0, 1, 0)).normalize();
-      const up = new THREE.Vector3().crossVectors(right, forward);
-      const tanV = Math.tan(THREE.MathUtils.degToRad(camera.fov) / 2);
-      const tanH = tanV * camera.aspect;
-      const point = new THREE.Vector3();
-      let distance = 0;
-      for (const pos of layout.leaf.values()) {
-        point.set(pos.x, LEAF_Y, pos.z);
-        const depth = point.dot(forward);
-        distance = Math.max(
-          distance,
-          Math.abs(point.dot(right)) / tanH - depth,
-          Math.abs(point.dot(up)) / tanV - depth
-        );
-      }
+      const points = [...layout.leaf.values()].map((pos) => new THREE.Vector3(pos.x, LEAF_Y, pos.z));
+      const fitted = fitDistance(camera, dir, points);
+      if (fitted === null) return false;
       // breathing room so edge leaves clear the HUD overlays
-      distance *= 1.12;
+      const distance = fitted * 1.12;
       camera.position.copy(dir).multiplyScalar(distance);
       controls.target.set(0, 0, 0);
       controls.minDistance = size * 0.15;
       controls.maxDistance = Math.max(size * 2.4, distance * 1.2);
       controls.update();
-    }
+      return true;
+    };
+    fitPendingRef.current = fitView() ? null : fitView;
 
     return () => {
+      fitPendingRef.current = null;
       disposeGroup(group);
       scene.remove(group);
       groupRef.current = null;
       leafMeshRef.current = null;
+      ghostMeshRef.current = null;
+      ghostIndexRef.current = new Map();
+      selectionRef.current = null;
       haloMeshRef.current = null;
       edgesRef.current = null;
       trailRef.current = null;
@@ -388,6 +472,8 @@ export function TreeScene({ city, playback, selectedPath, onSelect }: TreeSceneP
   // playback → leaf colors, halo targets, branch tinting
   useEffect(() => {
     const leaves = leafMeshRef.current;
+    const ghosts = ghostMeshRef.current;
+    const ghostIndex = ghostIndexRef.current;
     const halos = haloMeshRef.current;
     const edges = edgesRef.current;
     if (!leaves || !halos || !edges || !city || !layout) return;
@@ -395,31 +481,30 @@ export function TreeScene({ city, playback, selectedPath, onSelect }: TreeSceneP
     const radii = radiiRef.current;
     const slots: HaloSlot[] = [];
     const present = new Set<number>();
-    // max touch rank per directory path, propagated from touched files
-    const dirRank = new Map<string, number>();
+    // directories on a path to a touched file — branches brighten as a
+    // single neutral tone, classification stays on the leaves
+    const litDirs = new Set<string>();
     for (const file of city.files) {
       const touch = playback.touchByFile.get(file.id);
-      const selected = file.path === selectedPath;
       let leafColor = file.ghost ? colors.ghost : colors.unvisited;
       if (touch) {
         leafColor = colors[touch];
-        if (file.ghost) leafColor = leafColor.clone().lerp(colors.ghost, 0.4);
         const visits = playback.visitsByFile.get(file.id) ?? 1;
-        slots.push({
-          fileId: file.id,
-          target: haloRadius(touch, visits),
-          color: selected ? colors.selected : colors[touch]
-        });
+        slots.push({ fileId: file.id, target: haloRadius(visits), color: colors[touch] });
         present.add(file.id);
-        const rank = touchRank[touch];
         const parts = file.path.split("/");
         let path = "";
         for (let i = 0; i < parts.length - 1; i++) {
           path = path ? `${path}/${parts[i]}` : parts[i];
-          if ((dirRank.get(path) ?? 0) < rank) dirRank.set(path, rank);
+          litDirs.add(path);
         }
       }
-      leaves.setColorAt(file.id, selected ? colors.selected : leafColor);
+      if (file.ghost) {
+        const i = ghostIndex.get(file.id);
+        if (ghosts && i !== undefined) ghosts.setColorAt(i, leafColor);
+      } else {
+        leaves.setColorAt(file.id, leafColor);
+      }
     }
     for (const [fileId, cur] of radii) {
       if (cur > 0.04 && !present.has(fileId)) {
@@ -432,31 +517,43 @@ export function TreeScene({ city, playback, selectedPath, onSelect }: TreeSceneP
     halos.count = slots.length;
     if (halos.instanceColor) halos.instanceColor.needsUpdate = true;
     if (leaves.instanceColor) leaves.instanceColor.needsUpdate = true;
+    if (ghosts?.instanceColor) ghosts.instanceColor.needsUpdate = true;
     slotsRef.current = slots;
 
-    // tint branches that lead to light
+    // brighten branches that lead to light
     const colorAttr = edges.geometry.getAttribute("color") as THREE.BufferAttribute;
-    const tinted = new THREE.Color();
     let vertex = 0;
     for (const meta of edgeMetaRef.current) {
-      let rank = 0;
+      let lit = false;
       if (meta.childFileId !== undefined) {
-        const touch = playback.touchByFile.get(meta.childFileId);
-        rank = touch ? touchRank[touch] : 0;
+        lit = playback.touchByFile.has(meta.childFileId);
       } else if (meta.childPath) {
-        rank = dirRank.get(meta.childPath) ?? 0;
+        lit = litDirs.has(meta.childPath);
       }
-      if (rank > 0) {
-        tinted.copy(EDGE_BASE).lerp(colors[rankTouch[rank]], 0.55);
-      } else {
-        tinted.copy(EDGE_BASE);
-      }
+      const tinted = lit ? EDGE_LIT : EDGE_BASE;
       for (let v = 0; v < meta.vertexCount; v++) {
         colorAttr.setXYZ(vertex++, tinted.r, tinted.g, tinted.b);
       }
     }
     colorAttr.needsUpdate = true;
-  }, [city, layout, playback, selectedPath]);
+  }, [city, layout, playback]);
+
+  // selection marker follows the selected leaf
+  useEffect(() => {
+    const selection = selectionRef.current;
+    if (!selection || !city || !layout) return;
+    const file = selectedPath ? city.files.find((f) => f.path === selectedPath) : undefined;
+    const pos = file ? layout.leaf.get(file.id) : undefined;
+    if (pos) {
+      selection.ring.position.set(pos.x, 0.1, pos.z);
+      selection.beam.position.set(pos.x, 3, pos.z);
+      selection.ring.visible = true;
+      selection.beam.visible = true;
+    } else {
+      selection.ring.visible = false;
+      selection.beam.visible = false;
+    }
+  }, [city, layout, selectedPath]);
 
   // trail arcs + firefly
   useEffect(() => {

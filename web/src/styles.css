@@ -584,6 +584,12 @@ dd {
   background: oklch(0.5 0.014 254);
 }
 
+/* hollow, matching the wireframe ghost leaves in the scene */
+.legend-dot.ghost {
+  background: transparent;
+  border: 1px solid oklch(0.55 0.014 254);
+}
+
 .encode-note {
   color: var(--faint);
   font-size: var(--text-xs);

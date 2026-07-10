@@ -20,6 +20,7 @@ export const Hud = memo(function Hud({ trace, city, view, editedNow, readNow, se
   const readFinal = stats ? stats.fovea - stats.edited : 0;
   const unvisitedNow = stats ? Math.max(0, stats.filesInRepo - editedNow - readNow - seenNow) : 0;
   const unvisitedFinal = stats ? Math.max(0, stats.filesInRepo - stats.fovea - stats.parafovea) : 0;
+  const ghostCount = city ? city.files.reduce((n, file) => n + (file.ghost ? 1 : 0), 0) : 0;
   return (
     <div className="hud" aria-hidden={!city}>
       <div className="hud-left">
@@ -64,6 +65,15 @@ export const Hud = memo(function Hud({ trace, city, view, editedNow, readNow, se
                 final={unvisitedFinal}
                 hint="Files in the map the agent never touched"
               />
+              {ghostCount > 0 ? (
+                <SpectrumStat
+                  kind="ghost"
+                  label="ghost"
+                  now={ghostCount}
+                  final={ghostCount}
+                  hint="Files the session touched that are gone from the repository — drawn hollow in the scene"
+                />
+              ) : null}
             </div>
             {/* two quiet rows: the session's shape, then its friction — final
                 totals only, unlike the playhead-live spectrum above */}
@@ -139,7 +149,7 @@ export const Hud = memo(function Hud({ trace, city, view, editedNow, readNow, se
             </button>
           </div>
           <div className="encode-note">
-            {view === "tree" ? "glow ∝ depth × revisits" : "height ∝ depth × revisits"}
+            {view === "tree" ? "glow ∝ revisits" : "height ∝ depth × revisits"}
           </div>
         </div>
       ) : null}
@@ -154,7 +164,7 @@ function SpectrumStat({
   final,
   hint
 }: {
-  kind: "edit" | "read" | "hit" | "unvisited";
+  kind: "edit" | "read" | "hit" | "unvisited" | "ghost";
   label: string;
   now: number;
   final: number;

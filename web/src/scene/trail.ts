@@ -32,7 +32,8 @@ export class TrailRenderer {
       vertexColors: true,
       transparent: true,
       blending: THREE.AdditiveBlending,
-      depthWrite: false
+      depthWrite: false,
+      fog: false
     });
     this.object = new THREE.LineSegments(geometry, material);
     this.object.frustumCulled = false;

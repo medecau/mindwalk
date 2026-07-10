@@ -14,6 +14,33 @@ export const touchColors: Record<Touch | "selected", THREE.Color> = {
   selected: new THREE.Color("#f6ead2")
 };
 
+// Distance along `dir` that fits every point inside the camera frustum.
+// Returns null while the viewport has no usable aspect (hidden pane, tab in
+// the background, mid-layout) — fitting then would park the camera at NaN
+// forever; callers must retry once a real resize lands.
+export function fitDistance(
+  camera: THREE.PerspectiveCamera,
+  dir: THREE.Vector3,
+  points: Iterable<THREE.Vector3>
+): number | null {
+  if (!Number.isFinite(camera.aspect) || camera.aspect <= 0) return null;
+  const forward = dir.clone().negate();
+  const right = new THREE.Vector3().crossVectors(forward, new THREE.Vector3(0, 1, 0)).normalize();
+  const up = new THREE.Vector3().crossVectors(right, forward);
+  const tanV = Math.tan(THREE.MathUtils.degToRad(camera.fov) / 2);
+  const tanH = tanV * camera.aspect;
+  let distance = 0;
+  for (const point of points) {
+    const depth = point.dot(forward);
+    distance = Math.max(
+      distance,
+      Math.abs(point.dot(right)) / tanH - depth,
+      Math.abs(point.dot(up)) / tanV - depth
+    );
+  }
+  return distance;
+}
+
 export const prefersReducedMotion = () =>
   typeof window !== "undefined" && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 
