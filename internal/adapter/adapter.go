@@ -138,13 +138,16 @@ func actionFor(tool string, input map[string]any, result string) string {
 		if searchCommand(command) {
 			return "search"
 		}
+		if readCommand(command) {
+			return "read"
+		}
 		return "exec"
 	case "exec":
 		commands := execCommands(input)
 		if len(commands) == 0 || !execHasOnlyStaticCommands(input, len(commands)) {
 			return "exec"
 		}
-		allVerify, allSearch := true, true
+		allVerify, allSearch, allRead := true, true, true
 		for _, command := range commands {
 			if !verifyCommand(command.command) {
 				allVerify = false
@@ -152,12 +155,18 @@ func actionFor(tool string, input map[string]any, result string) string {
 			if !searchCommand(command.command) {
 				allSearch = false
 			}
+			if !readCommand(command.command) {
+				allRead = false
+			}
 		}
 		if allVerify {
 			return "verify"
 		}
 		if allSearch {
 			return "search"
+		}
+		if allRead {
+			return "read"
 		}
 		return "exec"
 	default:
@@ -223,6 +232,9 @@ func targetsFor(cwd, tool string, input map[string]any, result string) ([]model.
 		}
 	case "Bash":
 		command := firstString(input, "command")
+		for _, path := range commandReadPaths(command) {
+			add(path, "read", true, nil, "")
+		}
 		for _, path := range extractCommandPaths(command) {
 			add(path, "hit", true, nil, "")
 		}
@@ -232,6 +244,9 @@ func targetsFor(cwd, tool string, input map[string]any, result string) ([]model.
 	case "exec_command":
 		command := firstString(input, "cmd", "command")
 		base := firstString(input, "workdir")
+		for _, path := range commandReadPaths(command) {
+			add(path, "read", true, nil, base)
+		}
 		for _, path := range extractCommandPaths(command) {
 			add(path, "hit", true, nil, base)
 		}
@@ -243,6 +258,9 @@ func targetsFor(cwd, tool string, input map[string]any, result string) ([]model.
 		}
 	case "exec":
 		for _, command := range execCommands(input) {
+			for _, path := range commandReadPaths(command.command) {
+				add(path, "read", true, nil, command.workdir)
+			}
 			for _, path := range extractCommandPaths(command.command) {
 				add(path, "hit", true, nil, command.workdir)
 			}
@@ -729,6 +747,130 @@ func searchCommand(command string) bool {
 		}
 	}
 	return searched
+}
+
+var readPrograms = map[string]bool{
+	"cat": true, "head": true, "tail": true, "nl": true, "sed": true,
+}
+
+// readCommand reports whether a shell command only pages file contents the
+// way Read would: every pipeline segment runs a read-only program and at
+// least one segment names a file to read. Conservative by design — anything
+// unrecognized stays "exec".
+func readCommand(command string) bool {
+	if len(commandReadPaths(command)) == 0 {
+		return false
+	}
+	cleaned := strings.NewReplacer("2>&1", " ", "2>/dev/null", " ", ">/dev/null", " ", "> /dev/null", " ").Replace(command)
+	segments := strings.FieldsFunc(cleaned, func(r rune) bool {
+		return r == '|' || r == ';' || r == '&' || r == '\n'
+	})
+	for _, segment := range segments {
+		if strings.ContainsRune(segment, '>') {
+			return false
+		}
+		fields := strings.Fields(segment)
+		for len(fields) > 0 && envAssignRe.MatchString(fields[0]) {
+			fields = fields[1:]
+		}
+		if len(fields) == 0 {
+			continue
+		}
+		program := strings.ToLower(filepath.Base(fields[0]))
+		if program == "sed" && !sedReadsOnly(fields[1:]) {
+			return false
+		}
+		if !readOnlyPrograms[program] && !readPrograms[program] {
+			return false
+		}
+	}
+	return true
+}
+
+// commandReadPaths returns the file arguments of pager-style segments —
+// cat/head/tail/nl and the `sed -n '…p' file` idiom — the shell equivalents
+// of opening a file to read it.
+func commandReadPaths(command string) []string {
+	seen := map[string]bool{}
+	var paths []string
+	segments := strings.FieldsFunc(command, func(r rune) bool {
+		return r == '|' || r == ';' || r == '&' || r == '\n'
+	})
+	for _, segment := range segments {
+		if strings.ContainsRune(segment, '>') {
+			continue
+		}
+		fields := strings.Fields(segment)
+		for len(fields) > 0 && envAssignRe.MatchString(fields[0]) {
+			fields = fields[1:]
+		}
+		if len(fields) == 0 {
+			continue
+		}
+		program := strings.ToLower(filepath.Base(fields[0]))
+		if !readPrograms[program] {
+			continue
+		}
+		args := fields[1:]
+		scriptArgs := 0
+		if program == "sed" {
+			// only the read idiom: sed -n '…p' file — anything else can rewrite
+			if !sedReadsOnly(args) {
+				continue
+			}
+			scriptArgs = 1
+		}
+		expectValue := false
+		for _, arg := range args {
+			if expectValue {
+				expectValue = false
+				continue
+			}
+			if strings.HasPrefix(arg, "-") {
+				expectValue = flagTakesValue(program, arg)
+				continue
+			}
+			if scriptArgs > 0 {
+				scriptArgs--
+				continue
+			}
+			// globs, redirections, and substitutions are not literal file paths
+			if strings.ContainsAny(arg, "<>*?$`") {
+				continue
+			}
+			path, ok := cleanExtractedPath(arg, true)
+			if !ok || seen[path] {
+				continue
+			}
+			seen[path] = true
+			paths = append(paths, path)
+		}
+	}
+	sort.Strings(paths)
+	return paths
+}
+
+func sedReadsOnly(args []string) bool {
+	hasN := false
+	for _, arg := range args {
+		if arg == "-n" {
+			hasN = true
+		}
+		if strings.HasPrefix(arg, "-i") {
+			return false
+		}
+	}
+	return hasN
+}
+
+func flagTakesValue(program, flag string) bool {
+	switch program {
+	case "head", "tail":
+		return flag == "-n" || flag == "-c"
+	case "sed":
+		return flag == "-e" || flag == "-f"
+	}
+	return false
 }
 
 func verifyCommand(command string) bool {

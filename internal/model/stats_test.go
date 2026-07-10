@@ -22,7 +22,7 @@ func TestComputeStatsFactCounters(t *testing.T) {
 		},
 	}
 
-	stats := ComputeStats(trace, 10)
+	stats := ComputeStats(trace, 10, ObservabilityExact)
 
 	if stats.Actions != (ActionCounts{Search: 1, Read: 1, Edit: 4, Exec: 1, Verify: 1}) {
 		t.Fatalf("actions = %#v", stats.Actions)
@@ -51,7 +51,35 @@ func TestComputeStatsEditsAfterLastVerifyWithoutVerify(t *testing.T) {
 			{Seq: 1, Action: "edit", Targets: []Target{{Path: "b.go", Touch: "edit"}}},
 		},
 	}
-	if stats := ComputeStats(trace, 0); stats.EditsAfterLastVerify != 2 {
+	if stats := ComputeStats(trace, 0, ObservabilityExact); stats.EditsAfterLastVerify != 2 {
 		t.Fatalf("editsAfterLastVerify = %d", stats.EditsAfterLastVerify)
+	}
+}
+
+func TestComputeStatsObservability(t *testing.T) {
+	strongRead := Event{Action: "read", Targets: []Target{{Path: "a.go", Touch: "read"}}}
+	weakRead := Event{Action: "read", Targets: []Target{{Path: "b.go", Touch: "read", Weak: true}}}
+	hitOnly := Event{Action: "search", Targets: []Target{{Path: "c.go", Touch: "hit"}}}
+
+	tests := []struct {
+		name        string
+		events      []Event
+		errorSignal string
+		wantReads   string
+		wantErrors  string
+	}{
+		{"strong reads are exact", []Event{strongRead}, ObservabilityExact, ObservabilityExact, ObservabilityExact},
+		{"any weak read downgrades", []Event{strongRead, weakRead}, ObservabilityExact, ObservabilityEstimated, ObservabilityExact},
+		{"no reads is unavailable", []Event{hitOnly}, ObservabilityEstimated, ObservabilityUnavailable, ObservabilityEstimated},
+		{"empty error signal falls back to estimated", []Event{strongRead}, "", ObservabilityExact, ObservabilityEstimated},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			stats := ComputeStats(&Trace{Events: tt.events}, 0, tt.errorSignal)
+			if stats.Observability.Reads != tt.wantReads || stats.Observability.Errors != tt.wantErrors {
+				t.Fatalf("observability = %#v, want reads %q errors %q", stats.Observability, tt.wantReads, tt.wantErrors)
+			}
+		})
 	}
 }

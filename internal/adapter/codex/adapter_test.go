@@ -6,6 +6,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/cosmtrek/mindwalk/internal/model"
 )
 
 func TestParseCodexSession(t *testing.T) {
@@ -95,7 +97,7 @@ func TestParseCodexSession(t *testing.T) {
 	if len(trace.Events) != 3 {
 		t.Fatalf("events = %d", len(trace.Events))
 	}
-	if got := trace.Events[0]; got.Tool != "exec_command" || got.Action != "exec" || len(got.Targets) != 1 || got.Targets[0].Path != "README.md" {
+	if got := trace.Events[0]; got.Tool != "exec_command" || got.Action != "read" || len(got.Targets) != 1 || got.Targets[0].Path != "README.md" || got.Targets[0].Touch != "read" {
 		t.Fatalf("read event = %#v", got)
 	}
 	if got := trace.Events[1]; got.Tool != "apply_patch" || got.Action != "edit" || got.Targets[0].Touch != "edit" {
@@ -106,6 +108,40 @@ func TestParseCodexSession(t *testing.T) {
 	}
 	if trace.Stats.Edited != 1 || trace.Stats.EventsBeforeFirstEdit != 1 || math.Abs(trace.Stats.ErrorRate-1.0/3.0) > 0.0001 {
 		t.Fatalf("stats = %#v", trace.Stats)
+	}
+	want := model.Observability{Reads: model.ObservabilityEstimated, Errors: model.ObservabilityEstimated}
+	if trace.Stats.Observability != want {
+		t.Fatalf("observability = %#v", trace.Stats.Observability)
+	}
+}
+
+func TestParseCodexContextCompactedBecomesCompactionMark(t *testing.T) {
+	dir := t.TempDir()
+	session := filepath.Join(dir, "rollout-2026-07-09T00-00-00-codex-compact.jsonl")
+	writeJSONL(t, session,
+		map[string]any{
+			"timestamp": "2026-07-09T00:00:00Z",
+			"type":      "session_meta",
+			"payload":   map[string]any{"id": "codex-compact", "timestamp": "2026-07-09T00:00:00Z"},
+		},
+		call("2026-07-09T00:00:01Z", "fc-1", "call-1", "exec_command", map[string]any{"cmd": "true"}),
+		output("2026-07-09T00:00:02Z", "call-1", "Process exited with code 0"),
+		map[string]any{
+			"timestamp": "2026-07-09T00:00:03Z",
+			"type":      "event_msg",
+			"payload":   map[string]any{"type": "context_compacted"},
+		},
+	)
+
+	trace, err := Adapter{Dir: dir}.Parse(session)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(trace.Marks) != 1 || trace.Marks[0].Type != "compaction" || trace.Marks[0].Seq != 1 {
+		t.Fatalf("marks = %#v", trace.Marks)
+	}
+	if trace.Stats.Compactions != 1 {
+		t.Fatalf("compactions = %d", trace.Stats.Compactions)
 	}
 }
 
@@ -261,7 +297,7 @@ func TestParseCodexCustomExec(t *testing.T) {
 		t.Fatalf("meta=%d events=%d", meta.EventCount, len(trace.Events))
 	}
 	event := trace.Events[0]
-	if event.Tool != "exec" || event.Action != "exec" || len(event.Targets) != 1 || event.Targets[0].Path != "README.md" {
+	if event.Tool != "exec" || event.Action != "read" || len(event.Targets) != 1 || event.Targets[0].Path != "README.md" || event.Targets[0].Touch != "read" {
 		t.Fatalf("event = %#v", event)
 	}
 }
@@ -351,6 +387,11 @@ func TestCommandOutputFailedVariants(t *testing.T) {
 		{output: "Script running with cell ID 28\nExit code: 1", want: false},
 		{output: "Script failed\nExit code: 0", want: true},
 		{output: "plain output", want: false},
+		{output: `{"message":"Wait timed out after 20000ms","timed_out":true}`, want: true},
+		{output: `{"message":"still running","timed_out":false}`, want: false},
+		{output: "apply_patch verification failed: Failed to find expected lines in a.go", want: true},
+		{output: "Wall time: 8.9 seconds\naborted by user", want: true},
+		{output: "Wall time: 8.9 seconds\nOutput:\naborted by user", want: false},
 	}
 	for _, tt := range tests {
 		if got := commandOutputFailed(tt.output); got != tt.want {

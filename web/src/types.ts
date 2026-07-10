@@ -126,7 +126,20 @@ export interface Stats {
   resultBytes: number;
   /** edit events after the last verify event; every edit event when the session never verified */
   editsAfterLastVerify: number;
+  observability: Observability;
 }
+
+/**
+ * Grades each derived metric's source signal: "exact" when the harness
+ * records it structurally, "estimated" when inferred from command or output
+ * text, "unavailable" when the log carries no usable signal.
+ */
+export interface Observability {
+  reads: MetricObservability;
+  errors: MetricObservability;
+}
+
+export type MetricObservability = "exact" | "estimated" | "unavailable";
 
 export interface ActionCounts {
   search: number;

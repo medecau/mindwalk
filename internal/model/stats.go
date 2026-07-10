@@ -1,10 +1,15 @@
 package model
 
-func ComputeStats(trace *Trace, filesInRepo int) Stats {
+// ComputeStats derives session facts from a parsed trace. errorSignal is the
+// adapter's grade for its own error detection (ObservabilityExact when the
+// source log flags failures structurally, ObservabilityEstimated when they
+// are inferred from output text); an empty value falls back to estimated.
+func ComputeStats(trace *Trace, filesInRepo int, errorSignal string) Stats {
 	state := map[string]string{}
 	lastReadVersion := map[string]int{}
 	editVersion := map[string]int{}
 	readEvents := 0
+	weakReads := 0
 	repeatedReads := 0
 	errors := 0
 	firstEdit := -1
@@ -37,6 +42,9 @@ func ComputeStats(trace *Trace, filesInRepo int) Stats {
 			}
 			if target.Touch == "read" {
 				readEvents++
+				if target.Weak {
+					weakReads++
+				}
 				if version, ok := lastReadVersion[target.Path]; ok && version == editVersion[target.Path] {
 					repeatedReads++
 				}
@@ -89,6 +97,20 @@ func ComputeStats(trace *Trace, filesInRepo int) Stats {
 	if len(trace.Events) > 0 {
 		stats.ErrorRate = float64(errors) / float64(len(trace.Events))
 	}
+	// Weak read targets are inferred from command text, so any of them in the
+	// mix downgrades the re-read rate; no reads at all leaves it undefined.
+	switch {
+	case readEvents == 0:
+		stats.Observability.Reads = ObservabilityUnavailable
+	case weakReads == 0:
+		stats.Observability.Reads = ObservabilityExact
+	default:
+		stats.Observability.Reads = ObservabilityEstimated
+	}
+	if errorSignal == "" {
+		errorSignal = ObservabilityEstimated
+	}
+	stats.Observability.Errors = errorSignal
 	return stats
 }
 

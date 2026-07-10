@@ -29,10 +29,10 @@ func TestBuildEventKeepsExecAggregatedAndFindsSingleCommandTarget(t *testing.T) 
 	source := `const r = await tools.exec_command({cmd:"sed -n '1,20p' README.md",workdir:` + jsonString(t, root) + `});`
 
 	event := buildExecEvent(root, map[string]any{"_raw": source})
-	if event.Tool != "exec" || event.Action != "exec" {
+	if event.Tool != "exec" || event.Action != "read" {
 		t.Fatalf("event = %#v", event)
 	}
-	if len(event.Targets) != 1 || event.Targets[0].Path != "README.md" || !event.Targets[0].Weak {
+	if len(event.Targets) != 1 || event.Targets[0].Path != "README.md" || !event.Targets[0].Weak || event.Targets[0].Touch != "read" {
 		t.Fatalf("targets = %#v", event.Targets)
 	}
 }
@@ -55,9 +55,12 @@ func TestBuildEventExtractsPromiseAllCommandTargets(t *testing.T) {
 	if len(event.Targets) != 2 {
 		t.Fatalf("targets = %#v", event.Targets)
 	}
-	want := []string{"first/main.go", "second/main.go"}
+	want := []struct {
+		path  string
+		touch string
+	}{{"first/main.go", "read"}, {"second/main.go", "hit"}}
 	for i, target := range event.Targets {
-		if target.Path != want[i] || !target.Weak {
+		if target.Path != want[i].path || target.Touch != want[i].touch || !target.Weak {
 			t.Fatalf("target %d = %#v", i, target)
 		}
 	}
@@ -143,6 +146,13 @@ func TestBuildEventClassifiesBashSearchCommands(t *testing.T) {
 		{`npm install 2>&1 | tail -3`, "exec"},
 		{`echo done`, "exec"},
 		{`go test ./... | tail -5`, "verify"},
+		{`cat internal/model/stats.go`, "read"},
+		{`sed -n '1,240p' web/src/ui/Hud.tsx`, "read"},
+		{`nl -ba main.go | head -50`, "read"},
+		{`head -n 20 Makefile`, "read"},
+		{`sed -i '' 's/a/b/g' main.go`, "exec"},
+		{`cat notes.md > backup.md`, "exec"},
+		{`cat main.go && rm main.go`, "exec"},
 	}
 
 	for _, tt := range tests {
@@ -161,6 +171,46 @@ func TestBuildEventExecActionAllSearchCommands(t *testing.T) {
 	event := buildExecEvent(t.TempDir(), map[string]any{"_raw": source})
 	if event.Tool != "exec" || event.Action != "search" {
 		t.Fatalf("event = %#v, want action %q", event, "search")
+	}
+}
+
+func TestBuildEventExecActionAllReadCommands(t *testing.T) {
+	source := `Promise.all([tools.exec_command({cmd:"sed -n '1,20p' main.go"}), tools.exec_command({cmd:"cat README.md"})])`
+	event := buildExecEvent(t.TempDir(), map[string]any{"_raw": source})
+	if event.Tool != "exec" || event.Action != "read" {
+		t.Fatalf("event = %#v, want action %q", event, "read")
+	}
+}
+
+func TestCommandReadPaths(t *testing.T) {
+	tests := []struct {
+		command string
+		want    []string
+	}{
+		{`sed -n '1,240p' internal/adapter/adapter.go`, []string{"internal/adapter/adapter.go"}},
+		{`cat a.go b.go`, []string{"a.go", "b.go"}},
+		{`head -n 20 Makefile`, []string{"Makefile"}},
+		{`tail -f logs/app.log`, []string{"logs/app.log"}},
+		{`cat src/main.go | rg TODO`, []string{"src/main.go"}},
+		{`sed -i '' 's/x/y/' a.go`, nil},
+		{`cat file.go > copy.go`, nil},
+		{`grep -rn TODO src`, nil},
+		{`cat *.go`, nil},
+		{`cat <<EOF > notes.md`, nil},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.command, func(t *testing.T) {
+			got := commandReadPaths(tt.command)
+			if len(got) != len(tt.want) {
+				t.Fatalf("commandReadPaths(%q) = %#v, want %#v", tt.command, got, tt.want)
+			}
+			for i := range got {
+				if got[i] != tt.want[i] {
+					t.Fatalf("commandReadPaths(%q) = %#v, want %#v", tt.command, got, tt.want)
+				}
+			}
+		})
 	}
 }
 

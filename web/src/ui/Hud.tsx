@@ -1,5 +1,5 @@
 import { memo } from "react";
-import type { ActionCounts, CityMap, Trace } from "../types";
+import type { ActionCounts, CityMap, MetricObservability, Trace } from "../types";
 import type { SceneView } from "../state/store";
 
 interface HudProps {
@@ -90,17 +90,20 @@ export const Hud = memo(function Hud({ trace, city, view, editedNow, readNow, se
               </span>
             </div>
             <div className="hud-quiet">
-              <span data-hint="Reads that re-read a file unchanged since its last read">
-                re-reads {pct(stats.regressionRate)}
+              <span data-hint={rereadHint(stats.observability.reads)}>
+                {stats.observability.reads === "unavailable"
+                  ? "re-reads n/a"
+                  : `re-reads ${approx(stats.observability.reads)}${pct(stats.regressionRate)}`}
               </span>
               <span
                 data-hint={
                   countActions(stats.errors) > 0
-                    ? `${mixHint(stats.errors)} — press X to jump to the next one`
-                    : "Tool calls that returned an error"
+                    ? `${mixHint(stats.errors)} — press X to jump to the next one${errorCaveat(stats.observability.errors)}`
+                    : `Tool calls that returned an error${errorCaveat(stats.observability.errors)}`
                 }
               >
-                errors {countActions(stats.errors)}
+                errors {approx(stats.observability.errors)}
+                {countActions(stats.errors)}
               </span>
               <span
                 className={stats.actions.verify === 0 && stats.actions.edit > 0 ? "warn" : ""}
@@ -168,6 +171,27 @@ function SpectrumStat({
 
 function pct(rate: number): string {
   return `${Math.round(rate * 100)}%`;
+}
+
+function approx(observability: MetricObservability): string {
+  return observability === "estimated" ? "~" : "";
+}
+
+function rereadHint(observability: MetricObservability): string {
+  switch (observability) {
+    case "unavailable":
+      return "No file reads observed — this session reads files through commands mindwalk could not recognize";
+    case "estimated":
+      return "Reads that re-read a file unchanged since its last read — inferred from shell commands, so the rate is approximate";
+    default:
+      return "Reads that re-read a file unchanged since its last read";
+  }
+}
+
+function errorCaveat(observability: MetricObservability): string {
+  return observability === "estimated"
+    ? " — inferred from command output; failures inside scripted calls may be missed"
+    : "";
 }
 
 const ACTION_ORDER = ["search", "read", "edit", "exec", "verify", "other"] as const;

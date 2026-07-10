@@ -87,7 +87,8 @@
         "compactions",
         "subagents",
         "resultBytes",
-        "editsAfterLastVerify"
+        "editsAfterLastVerify",
+        "observability"
       ],
       "properties": {
         "filesInRepo": { "type": "integer", "minimum": 0 },
@@ -113,6 +114,16 @@
           "type": "integer",
           "minimum": 0,
           "description": "Edit events after the last verify event; every edit event when the session never verified"
+        },
+        "observability": {
+          "type": "object",
+          "description": "Grades each derived metric's source signal: exact when the harness records it structurally, estimated when inferred from command or output text, unavailable when the log carries no usable signal",
+          "required": ["reads", "errors"],
+          "properties": {
+            "reads": { "enum": ["exact", "estimated", "unavailable"] },
+            "errors": { "enum": ["exact", "estimated", "unavailable"] }
+          },
+          "additionalProperties": false
         }
       },
       "additionalProperties": false

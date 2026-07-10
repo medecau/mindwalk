@@ -470,7 +470,9 @@ func (s *Server) loadTraceAndMap(meta model.SessionMeta) (*model.Trace, *model.C
 	} else {
 		assignFileIDs(trace, city)
 	}
-	trace.Stats = model.ComputeStats(trace, repoFileCount(city))
+	// Recompute with the citymap's file count, carrying over the adapter's
+	// grade for its error signal — the recount cannot re-derive it.
+	trace.Stats = model.ComputeStats(trace, repoFileCount(city), trace.Stats.Observability.Errors)
 	return trace, city, nil
 }
 

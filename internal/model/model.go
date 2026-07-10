@@ -118,6 +118,23 @@ type Stats struct {
 	// EditsAfterLastVerify counts edit events after the last verify event;
 	// when the session never ran a verify it counts every edit event.
 	EditsAfterLastVerify int `json:"editsAfterLastVerify"`
+	// Observability grades each derived metric's source signal so the UI can
+	// tell a true zero from a blind spot in the session log.
+	Observability Observability `json:"observability"`
+}
+
+// Observability values: "exact" when the harness records the signal
+// structurally, "estimated" when it is inferred from command or output text,
+// "unavailable" when the log carries no usable signal.
+const (
+	ObservabilityExact       = "exact"
+	ObservabilityEstimated   = "estimated"
+	ObservabilityUnavailable = "unavailable"
+)
+
+type Observability struct {
+	Reads  string `json:"reads"`
+	Errors string `json:"errors"`
 }
 
 // ActionCounts tallies events per action class; as Stats.Errors it tallies

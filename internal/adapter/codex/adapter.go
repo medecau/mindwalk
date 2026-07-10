@@ -246,7 +246,14 @@ func (a Adapter) Parse(path string) (*model.Trace, error) {
 		case "event_msg":
 			recognized = true
 			var payload patchApplyEndPayload
-			if json.Unmarshal(line.Payload, &payload) != nil || payload.Type != "patch_apply_end" || payload.CallID == "" {
+			if json.Unmarshal(line.Payload, &payload) != nil {
+				return
+			}
+			if payload.Type == "context_compacted" {
+				trace.Marks = append(trace.Marks, model.Mark{Seq: len(callOrder), Type: "compaction"})
+				return
+			}
+			if payload.Type != "patch_apply_end" || payload.CallID == "" {
 				return
 			}
 			if !directPatches[payload.CallID] {
@@ -283,7 +290,10 @@ func (a Adapter) Parse(path string) (*model.Trace, error) {
 		trace.Session.Title = filepath.Base(path)
 	}
 	trace.Session.EventCount = len(trace.Events)
-	trace.Stats = model.ComputeStats(trace, 0)
+	// Codex logs carry no structural error flag; failures are inferred from
+	// output text, and inner commands of the js exec runner surface only what
+	// the script chooses to print.
+	trace.Stats = model.ComputeStats(trace, 0, model.ObservabilityEstimated)
 	if !recognized {
 		return nil, fmt.Errorf("not a Codex session: %s", path)
 	}
@@ -587,7 +597,8 @@ var exitCodeRe = regexp.MustCompile(`(?im)^(?:Process exited with code|Exit code
 func commandOutputFailed(output string) bool {
 	trimmed := strings.TrimSpace(output)
 	var envelope struct {
-		ExitCode *int `json:"exit_code"`
+		ExitCode *int  `json:"exit_code"`
+		TimedOut *bool `json:"timed_out"`
 		Metadata struct {
 			ExitCode *int `json:"exit_code"`
 		} `json:"metadata"`
@@ -599,6 +610,12 @@ func commandOutputFailed(output string) bool {
 		if envelope.Metadata.ExitCode != nil {
 			return *envelope.Metadata.ExitCode != 0
 		}
+		if envelope.TimedOut != nil && *envelope.TimedOut {
+			return true
+		}
+	}
+	if strings.HasPrefix(strings.ToLower(trimmed), "apply_patch verification failed") {
+		return true
 	}
 	firstLine := trimmed
 	if newline := strings.IndexByte(firstLine, '\n'); newline >= 0 {
@@ -615,6 +632,11 @@ func commandOutputFailed(output string) bool {
 	for _, marker := range []string{"\nOutput:\n", "\nFinal output:\n"} {
 		if index := strings.Index(header, marker); index >= 0 {
 			header = header[:index]
+		}
+	}
+	for _, line := range strings.Split(header, "\n") {
+		if strings.EqualFold(strings.TrimSpace(line), "aborted by user") {
+			return true
 		}
 	}
 	match := exitCodeRe.FindStringSubmatch(header)
