@@ -129,11 +129,10 @@ export const SessionRail = memo(function SessionRail({
           >
             <span className="session-title">{session.title || session.id}</span>
             <span className="session-meta">
-              <span className={`harness-badge ${harnessClass(session.harness)}`}>
-                {harnessLabel(session.harness)}
-              </span>
-              <span>
-                {session.eventCount} calls
+              <span className={`harness-dot ${harnessClass(session.harness)}`} aria-hidden />
+              <span className="session-meta-text">
+                {harnessLabel(session.harness)} · {session.eventCount}{" "}
+                {session.eventCount === 1 ? "call" : "calls"}
                 {session.gitBranch ? ` · ${session.gitBranch}` : ""}
                 {session.endedAt ? ` · ${shortDate(session.endedAt)}` : ""}
               </span>
