@@ -215,119 +215,139 @@ export function Timeline({ trace, currentSeq, onChange }: TimelineProps) {
 
   return (
     <footer className="deck">
-      <div className="transport">
-        <button
-          className="icon-btn"
-          onClick={() => onChange(0)}
-          disabled={total === 0}
-          title="Restart (Home)"
-          aria-label="Restart playback"
-        >
-          <RotateCcw size={15} />
-        </button>
-        <button
-          className="icon-btn"
-          onClick={() => step(-1)}
-          disabled={total === 0}
-          title="Step back (←)"
-          aria-label="Step back one event"
-        >
-          <StepBack size={15} />
-        </button>
-        <button
-          className="play-btn"
-          onClick={togglePlay}
-          disabled={total === 0}
-          title={playing ? "Pause (Space)" : "Play (Space)"}
-          aria-label={playing ? "Pause playback" : "Play playback"}
-        >
-          {playing ? <Pause size={15} /> : <Play size={15} />}
-          <span>{playing ? "Pause" : "Play"}</span>
-        </button>
-        <button
-          className="icon-btn"
-          onClick={() => step(1)}
-          disabled={total === 0}
-          title="Step forward (→)"
-          aria-label="Step forward one event"
-        >
-          <StepForward size={15} />
-        </button>
-        <button
-          className={speed === 1 ? "speed-btn" : "speed-btn engaged"}
-          onClick={cycleSpeed}
-          disabled={total === 0}
-          title="Cycle playback speed (S)"
-          aria-label={`Playback speed ${speed}x`}
-        >
-          {speed}×
-        </button>
+      <div className="deck-main">
+        <div className="transport">
+          <button
+            className="icon-btn"
+            onClick={() => onChange(0)}
+            disabled={total === 0}
+            title="Restart (Home)"
+            aria-label="Restart playback"
+          >
+            <RotateCcw size={15} />
+          </button>
+          <button
+            className="icon-btn"
+            onClick={() => step(-1)}
+            disabled={total === 0}
+            title="Step back (←)"
+            aria-label="Step back one event"
+          >
+            <StepBack size={15} />
+          </button>
+          <button
+            className="play-btn"
+            onClick={togglePlay}
+            disabled={total === 0}
+            title={playing ? "Pause (Space)" : "Play (Space)"}
+            aria-label={playing ? "Pause playback" : "Play playback"}
+          >
+            {playing ? <Pause size={15} /> : <Play size={15} />}
+            <span>{playing ? "Pause" : "Play"}</span>
+          </button>
+          <button
+            className="icon-btn"
+            onClick={() => step(1)}
+            disabled={total === 0}
+            title="Step forward (→)"
+            aria-label="Step forward one event"
+          >
+            <StepForward size={15} />
+          </button>
+          <button
+            className={speed === 1 ? "speed-btn" : "speed-btn engaged"}
+            onClick={cycleSpeed}
+            disabled={total === 0}
+            title="Cycle playback speed (S)"
+            aria-label={`Playback speed ${speed}x`}
+          >
+            {speed}×
+          </button>
+        </div>
+
+        <div className="strip">
+          <div className="strip-marks" aria-hidden>
+            {markGroups.map((group, i) => (
+              <span
+                key={`${group.type}-${group.seq}-${i}`}
+                className={`strip-mark ${group.type}`}
+                style={{ left: `${group.pos * 100}%` }}
+                title={`${group.note || MARK_LABEL[group.type]}${group.count > 1 ? ` ×${group.count}` : ""}`}
+                onClick={() => onChange(group.seq)}
+              />
+            ))}
+          </div>
+          <div className="strip-bars" aria-hidden>
+            {buckets.map((bucket, i) => (
+              <span
+                key={i}
+                className={`strip-bar ${bucket.dominant}`}
+                style={{ height: `${18 + (bucket.count / peak) * 82}%` }}
+              />
+            ))}
+          </div>
+          {total > 0 ? (
+            <div className="strip-playhead" style={{ left: `${(seq / Math.max(max, 1)) * 100}%` }} aria-hidden />
+          ) : null}
+          <input
+            className="strip-input"
+            type="range"
+            min={0}
+            max={max}
+            value={seq}
+            disabled={total === 0}
+            onChange={(e) => onChange(Number(e.currentTarget.value))}
+            aria-label="Playback position"
+            aria-valuetext={event ? `event ${event.seq}: ${event.tool}` : "empty"}
+          />
+        </div>
+
+        <div className="deck-pos">
+          <span className="deck-pos-count">{total > 0 ? `${seq + 1} / ${total}` : "0 / 0"}</span>
+          <span className="deck-pos-clock">{event?.ts ? clock(event.ts) : "—"}</span>
+        </div>
       </div>
 
-      <div className="strip">
-        <div className="strip-marks" aria-hidden>
-          {markGroups.map((group, i) => (
-            <span
-              key={`${group.type}-${group.seq}-${i}`}
-              className={`strip-mark ${group.type}`}
-              style={{ left: `${group.pos * 100}%` }}
-              title={`${group.note || MARK_LABEL[group.type]}${group.count > 1 ? ` ×${group.count}` : ""}`}
-              onClick={() => onChange(group.seq)}
-            />
-          ))}
-        </div>
-        <div className="strip-bars" aria-hidden>
-          {buckets.map((bucket, i) => (
-            <span
-              key={i}
-              className={`strip-bar ${bucket.dominant}`}
-              style={{ height: `${18 + (bucket.count / peak) * 82}%` }}
-            />
-          ))}
-        </div>
-        {total > 0 ? (
-          <div className="strip-playhead" style={{ left: `${(seq / Math.max(max, 1)) * 100}%` }} aria-hidden />
-        ) : null}
-        <div className="strip-legend" aria-hidden>
-          {STRIP_ACTIONS.map((action) => (
-            <span key={action} className="strip-legend-item">
-              <span className={`action-dot ${action}`} />
-              {action}
-            </span>
-          ))}
-        </div>
-        <input
-          className="strip-input"
-          type="range"
-          min={0}
-          max={max}
-          value={seq}
-          disabled={total === 0}
-          onChange={(e) => onChange(Number(e.currentTarget.value))}
-          aria-label="Playback position"
-          aria-valuetext={event ? `event ${event.seq}: ${event.tool}` : "empty"}
-        />
-      </div>
-
-      <div className="readout">
-        <span className="readout-count">
-          {total > 0 ? `${seq + 1} / ${total}` : "0 / 0"}
-        </span>
-        <span className="readout-tool">
+      <div className="deck-foot">
+        <div className="readout-now">
           {event ? (
             <>
               <span className={`action-dot ${event.action}`} />
-              {event.tool}
+              <span className="readout-tool">{event.tool}</span>
               {event.isError ? <span className="err">error</span> : null}
-              {event.ts ? <span className="readout-clock">{clock(event.ts)}</span> : null}
+              <span className="readout-summary" title={event.summary}>
+                {event.summary}
+              </span>
             </>
           ) : (
-            "No session"
+            <span className="readout-summary">Select a session to start the walk.</span>
           )}
-        </span>
-        <p className="readout-summary" title={event?.summary}>
-          {event?.summary ?? "Select a session to start the walk."}
-        </p>
+        </div>
+        <div className="deck-legend" aria-hidden>
+          <span className="legend-group">
+            {STRIP_ACTIONS.map((action) => (
+              <span key={action} className="legend-item">
+                <span className={`action-dot ${action}`} />
+                {action}
+              </span>
+            ))}
+          </span>
+          <span className="legend-sep" />
+          <span className="legend-group">
+            <span className="legend-item">
+              <span className="legend-glyph compaction" />
+              compaction
+            </span>
+            <span className="legend-item">
+              <span className="legend-glyph subagent" />
+              subagent
+            </span>
+            <span className="legend-item">
+              <span className="legend-glyph user-message" />
+              user turn
+            </span>
+          </span>
+        </div>
       </div>
     </footer>
   );

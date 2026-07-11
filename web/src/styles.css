@@ -19,13 +19,23 @@
   --text-sm: 0.9rem;
   --text-lg: 1.35rem;
 
-  /* the light scale */
+  /* the light scale (touch states: what the scene and HUD glow with) */
   --moss: oklch(0.78 0.11 131);
   --moon: oklch(0.83 0.07 250);
   --amber: oklch(0.79 0.13 68);
   --ember: oklch(0.73 0.16 52);
   --pine: oklch(0.72 0.09 155);
   --alarm: oklch(0.7 0.16 32);
+
+  /* timeline action spectrum: cool = observation, warm = mutation;
+     chroma tracks importance so edits outshine the background hum */
+  --act-search: oklch(0.74 0.09 192);
+  --act-read: oklch(0.8 0.07 242);
+  --act-edit: oklch(0.8 0.16 75);
+  --act-verify: oklch(0.75 0.13 145);
+  --act-exec: oklch(0.58 0.02 255);
+  --mark-compaction: oklch(0.66 0.2 32);
+  --mark-subagent: oklch(0.74 0.09 300);
 
   --font-display: "Fraunces Variable", "Songti SC", "Noto Serif SC", serif;
   --font-body: "Schibsted Grotesk Variable", "PingFang SC", "Hiragino Sans GB",
@@ -900,36 +910,49 @@ dd {
 }
 
 .action-dot.search {
-  background: var(--moss);
+  background: var(--act-search);
 }
 
 .action-dot.read {
-  background: var(--moon);
+  background: var(--act-read);
 }
 
 .action-dot.edit {
-  background: var(--amber);
+  background: var(--act-edit);
 }
 
 .action-dot.verify {
-  background: var(--pine);
+  background: var(--act-verify);
 }
 
 .action-dot.exec {
-  background: var(--muted);
+  background: var(--act-exec);
 }
 
 /* ---------- deck (timeline) ---------- */
 
 .deck {
   flex: none;
-  display: grid;
-  grid-template-columns: auto minmax(200px, 1fr) minmax(230px, 330px);
-  gap: 22px;
-  align-items: center;
-  padding: 13px 22px 15px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 12px 22px 10px;
   background: var(--panel);
   border-top: 1px solid var(--hairline);
+}
+
+/* band one is the instrument row: transport, full-width strip, position dial */
+.deck-main {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+}
+
+/* band two is the caption line: what the playhead is on, then the key */
+.deck-foot {
+  display: flex;
+  align-items: center;
+  gap: 26px;
 }
 
 .transport {
@@ -1002,6 +1025,7 @@ dd {
 
 .strip {
   position: relative;
+  flex: 1;
   height: 46px;
   min-width: 0;
 }
@@ -1022,7 +1046,7 @@ dd {
   width: 7px;
   height: 7px;
   transform: translateX(-50%) rotate(45deg);
-  border: 1px solid var(--ember);
+  border: 1px solid var(--mark-compaction);
   background: transparent;
   pointer-events: auto;
   cursor: pointer;
@@ -1034,27 +1058,41 @@ dd {
 }
 
 .strip-mark.subagent {
-  border-color: var(--moon);
+  border-color: var(--mark-subagent);
   border-radius: 50%;
 }
 
-/* user turns are frequent: a quiet slate tick, never a peer of compaction
-   diamonds. transparent side borders widen the click target past 2px. */
+/* user turns are frequent: a quiet prompt chevron — "an instruction was
+   typed here" — never a peer of compaction diamonds. the box is an
+   invisible 11px click target; the glyph is drawn by ::after. */
 .strip-mark.user-message {
-  top: 2px;
-  width: 8px;
-  height: 6px;
-  border: 0 solid transparent;
-  border-inline-width: 3px;
+  top: 0;
+  width: 11px;
+  height: 10px;
+  border: 0;
   border-radius: 0;
-  background: oklch(0.52 0.02 252);
-  background-clip: content-box;
   transform: translateX(-50%);
 }
 
+.strip-mark.user-message::after {
+  content: "";
+  position: absolute;
+  left: 3px;
+  top: 2.5px;
+  width: 4px;
+  height: 4px;
+  border: 1.5px solid var(--faint);
+  border-left: 0;
+  border-bottom: 0;
+  transform: rotate(45deg);
+}
+
 .strip-mark.user-message:hover {
-  transform: translateX(-50%) scale(1.6, 1.35);
-  background-color: var(--muted);
+  transform: translateX(-50%) scale(1.5);
+}
+
+.strip-mark.user-message:hover::after {
+  border-color: var(--ink);
 }
 
 .strip-bars {
@@ -1078,23 +1116,23 @@ dd {
 }
 
 .strip-bar.search {
-  background: var(--moss);
+  background: var(--act-search);
 }
 
 .strip-bar.read {
-  background: var(--moon);
+  background: var(--act-read);
 }
 
 .strip-bar.edit {
-  background: var(--amber);
+  background: var(--act-edit);
 }
 
 .strip-bar.verify {
-  background: var(--pine);
+  background: var(--act-verify);
 }
 
 .strip-bar.exec {
-  background: oklch(0.55 0.02 252);
+  background: var(--act-exec);
 }
 
 .strip-playhead {
@@ -1118,30 +1156,6 @@ dd {
   background: var(--ink);
 }
 
-/* engraved axis caption: decodes the bar colors without leaving the frame */
-.strip-legend {
-  position: absolute;
-  /* keep clear of the playhead parked at the strip's right end */
-  right: 12px;
-  bottom: 0;
-  display: flex;
-  gap: 11px;
-  color: var(--faint);
-  font-size: 0.68rem;
-  letter-spacing: 0.07em;
-}
-
-.strip-legend-item {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-}
-
-.strip-legend .action-dot {
-  width: 5px;
-  height: 5px;
-}
-
 .strip-input {
   position: absolute;
   inset: 8px 0 0;
@@ -1151,38 +1165,45 @@ dd {
   cursor: ew-resize;
 }
 
-.readout {
-  min-width: 0;
-  display: grid;
-  grid-template-columns: auto 1fr;
-  align-items: baseline;
-  gap: 2px 10px;
+/* position dial: event index over wall clock, right-aligned like a meter face */
+.deck-pos {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 1px;
+  min-width: 78px;
   font-variant-numeric: tabular-nums;
 }
 
-.readout-count {
+.deck-pos-count {
+  color: var(--ink);
+  font-size: var(--text-sm);
+  letter-spacing: 0.04em;
+}
+
+.deck-pos-clock {
   color: var(--faint);
   font-size: var(--text-xs);
   letter-spacing: 0.06em;
 }
 
-.readout-tool {
+.readout-now {
+  flex: 1;
+  min-width: 0;
   display: flex;
   align-items: center;
-  gap: 7px;
+  gap: 8px;
   font-size: var(--text-sm);
-  font-weight: 560;
   white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
 }
 
-.readout-clock {
-  color: var(--faint);
-  font-weight: 420;
+.readout-tool {
+  font-weight: 560;
+  flex: none;
 }
 
-.readout-tool .err {
+.readout-now .err {
+  flex: none;
   color: var(--alarm);
   font-size: var(--text-xs);
   letter-spacing: 0.08em;
@@ -1190,13 +1211,75 @@ dd {
 }
 
 .readout-summary {
-  grid-column: 1 / -1;
   color: var(--muted);
-  font-size: var(--text-sm);
   line-height: 1.4;
-  white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+/* full key for the strip: bar colors, then the mark shapes above them */
+.deck-legend {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 13px;
+  color: var(--faint);
+  font-size: 0.68rem;
+  letter-spacing: 0.07em;
+  white-space: nowrap;
+}
+
+.legend-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 11px;
+}
+
+.legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.deck-legend .action-dot {
+  width: 5px;
+  height: 5px;
+}
+
+.legend-sep {
+  width: 1px;
+  height: 11px;
+  background: var(--hairline-strong);
+}
+
+/* glyphs mirror the strip-mark shapes so the key reads one-to-one */
+.legend-glyph {
+  display: inline-block;
+  flex: none;
+}
+
+.legend-glyph.compaction {
+  width: 6px;
+  height: 6px;
+  border: 1px solid var(--mark-compaction);
+  transform: rotate(45deg);
+}
+
+.legend-glyph.subagent {
+  width: 6px;
+  height: 6px;
+  border: 1px solid var(--mark-subagent);
+  border-radius: 50%;
+}
+
+.legend-glyph.user-message {
+  width: 4px;
+  height: 4px;
+  border: 1.5px solid var(--faint);
+  border-left: 0;
+  border-bottom: 0;
+  transform: rotate(45deg);
+  margin-right: 2px;
 }
 
 /* ---------- toast ---------- */
@@ -1297,18 +1380,14 @@ dd {
     max-height: 46vh;
   }
 
-  .deck {
-    grid-template-columns: auto 1fr;
-  }
-
-  .readout {
+  .deck-pos {
     display: none;
   }
 }
 
-/* the axis caption needs a wide strip; below this it would cover the bars */
-@media (max-width: 1280px) {
-  .strip-legend {
+/* the key is reference material; below this the caption line belongs to the summary */
+@media (max-width: 1180px) {
+  .deck-legend {
     display: none;
   }
 }
