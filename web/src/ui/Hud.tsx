@@ -1,6 +1,11 @@
-import { memo } from "react";
+import { memo, useEffect, useRef, useState } from "react";
 import type { ActionCounts, CityMap, MetricObservability, Trace } from "../types";
 import type { SceneView } from "../state/store";
+
+export interface ChurnEntry {
+  path: string;
+  edits: number;
+}
 
 interface HudProps {
   trace?: Trace;
@@ -10,17 +15,59 @@ interface HudProps {
   editedNow: number;
   readNow: number;
   seenNow: number;
+  churn: ChurnEntry[];
   onViewChange: (view: SceneView) => void;
+  onSelectFile: (path: string) => void;
 }
+
+const CHURN_PANEL_ROWS = 8;
 
 // memo: the app re-renders every playback tick; the HUD only changes when the
 // session, the view toggle, or the touch counts under the playhead change
-export const Hud = memo(function Hud({ trace, city, view, editedNow, readNow, seenNow, onViewChange }: HudProps) {
+export const Hud = memo(function Hud({
+  trace,
+  city,
+  view,
+  editedNow,
+  readNow,
+  seenNow,
+  churn,
+  onViewChange,
+  onSelectFile
+}: HudProps) {
   const stats = trace?.stats;
   const readFinal = stats ? stats.fovea - stats.edited : 0;
   const unvisitedNow = stats ? Math.max(0, stats.filesInRepo - editedNow - readNow - seenNow) : 0;
   const unvisitedFinal = stats ? Math.max(0, stats.filesInRepo - stats.fovea - stats.parafovea) : 0;
   const ghostCount = city ? city.files.reduce((n, file) => n + (file.ghost ? 1 : 0), 0) : 0;
+  const errorCount = stats ? countActions(stats.errors) : 0;
+  const showReview = stats ? errorCount > 0 || stats.churnFiles > 0 || stats.actions.edit > 0 : false;
+
+  const [churnOpen, setChurnOpen] = useState(false);
+  const churnPanelRef = useRef<HTMLDivElement | null>(null);
+  const churnToggleRef = useRef<HTMLButtonElement | null>(null);
+
+  // a new session invalidates the open list; close instead of showing stale rows
+  useEffect(() => setChurnOpen(false), [trace]);
+
+  useEffect(() => {
+    if (!churnOpen) return;
+    const onPointerDown = (event: PointerEvent) => {
+      const target = event.target as Node;
+      if (churnPanelRef.current?.contains(target) || churnToggleRef.current?.contains(target)) return;
+      setChurnOpen(false);
+    };
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setChurnOpen(false);
+    };
+    document.addEventListener("pointerdown", onPointerDown);
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("pointerdown", onPointerDown);
+      document.removeEventListener("keydown", onKeyDown);
+    };
+  }, [churnOpen]);
+
   return (
     <div className="hud" aria-hidden={!city}>
       <div className="hud-left">
@@ -30,6 +77,11 @@ export const Hud = memo(function Hud({ trace, city, view, editedNow, readNow, se
             <span>{city.repo.commit || "worktree"}</span>
             {city.repo.dirty ? <span className="dirty">● dirty</span> : null}
             {trace?.session.model ? <span>{trace.session.model}</span> : null}
+            {stats ? (
+              <span data-hint="Files in the repository map — the denominator of the coverage spectrum below">
+                {stats.filesInRepo} files
+              </span>
+            ) : null}
           </div>
         ) : null}
         {stats ? (
@@ -75,12 +127,11 @@ export const Hud = memo(function Hud({ trace, city, view, editedNow, readNow, se
                 />
               ) : null}
             </div>
-            {/* two quiet rows: the session's shape, then its friction — final
-                totals only, unlike the playhead-live spectrum above */}
+            {/* session scale: quiet background numbers, final totals only —
+                unlike the playhead-live spectrum above */}
             <div className="hud-quiet">
-              <span data-hint="Files in the repository map">{stats.filesInRepo} files</span>
-              <span data-hint={`Tool events — ${mixHint(stats.actions)}`}>
-                {countActions(stats.actions)} events
+              <span data-hint={`Tool calls — ${mixHint(stats.actions)}`}>
+                {countActions(stats.actions)} calls
               </span>
               <span data-hint="User messages — each one starts a turn of agent work">
                 {stats.userTurns} turns
@@ -98,43 +149,85 @@ export const Hud = memo(function Hud({ trace, city, view, editedNow, readNow, se
               <span data-hint="Tool output the agent consumed over the session">
                 {fmtBytes(stats.resultBytes)} output
               </span>
-            </div>
-            <div className="hud-quiet">
               <span data-hint={rereadHint(stats.observability.reads)}>
                 {stats.observability.reads === "unavailable"
                   ? "re-reads n/a"
                   : `re-reads ${approx(stats.observability.reads)}${pct(stats.regressionRate)}`}
               </span>
-              <span
-                data-hint={
-                  countActions(stats.errors) > 0
-                    ? `${mixHint(stats.errors)} — press X to jump to the next one${errorCaveat(stats.observability.errors)}`
-                    : `Tool calls that returned an error${errorCaveat(stats.observability.errors)}`
-                }
-              >
-                errors {approx(stats.observability.errors)}
-                {countActions(stats.errors)}
-              </span>
-              <span
-                className={stats.actions.verify === 0 && stats.actions.edit > 0 ? "warn" : ""}
-                data-hint="Commands recognized as builds or tests (go test, make test, npm run build, …) — pass/fail is not tracked"
-              >
-                verify ×{stats.actions.verify}
-              </span>
-              {stats.actions.verify > 0 && stats.editsAfterLastVerify > 0 ? (
-                <span className="warn" data-hint="Edit events after the session's last build or test run">
-                  {stats.editsAfterLastVerify} edits after last verify
-                </span>
-              ) : null}
-              {stats.churnFiles > 0 ? (
-                <span
-                  className="warn"
-                  data-hint={`Files edited in 3+ separate events — the most-edited file took ${stats.maxEditsPerFile} edits`}
-                >
-                  churn {stats.churnFiles} file{stats.churnFiles === 1 ? "" : "s"}
-                </span>
-              ) : null}
             </div>
+            {/* review: only signals worth a second look — absent when clean */}
+            {showReview ? (
+              <div className="hud-review">
+                <span className="review-label">review</span>
+                {errorCount > 0 ? (
+                  <span
+                    className="warn"
+                    data-hint={`${mixHint(stats.errors)} — press X to jump to the next one${errorCaveat(stats.observability.errors)}`}
+                  >
+                    {approx(stats.observability.errors)}
+                    {errorCount} error{errorCount === 1 ? "" : "s"}
+                  </span>
+                ) : null}
+                {stats.churnFiles > 0 ? (
+                  <button
+                    ref={churnToggleRef}
+                    className={churnOpen ? "warn churn-toggle open" : "warn churn-toggle"}
+                    aria-expanded={churnOpen}
+                    onClick={() => setChurnOpen((open) => !open)}
+                    data-hint={`Files edited in three or more separate events — the most-edited file changed ${stats.maxEditsPerFile} times. Click to list them.`}
+                  >
+                    {stats.churnFiles} file{stats.churnFiles === 1 ? "" : "s"} edited 3+ times
+                  </button>
+                ) : null}
+                {stats.actions.edit > 0 ? (
+                  stats.actions.verify === 0 ? (
+                    <span
+                      className="warn"
+                      data-hint="The session edited files but no build or test commands were recognized (go test, make test, npm run build, …)"
+                    >
+                      never verified
+                    </span>
+                  ) : stats.editsAfterLastVerify > 0 ? (
+                    <span
+                      className="warn"
+                      data-hint={`Edit events after the session's last build or test run — ${verifyRuns(stats.actions.verify)} total; pass/fail is not tracked`}
+                    >
+                      {stats.editsAfterLastVerify} edit{stats.editsAfterLastVerify === 1 ? "" : "s"} after
+                      last verify
+                    </span>
+                  ) : (
+                    <span
+                      className="ok"
+                      data-hint={`The last edit was followed by a build or test run — ${verifyRuns(stats.actions.verify)} total; pass/fail is not tracked`}
+                    >
+                      verified after final edit
+                    </span>
+                  )
+                ) : null}
+              </div>
+            ) : null}
+            {churnOpen ? (
+              <div className="churn-panel" ref={churnPanelRef}>
+                {churn.slice(0, CHURN_PANEL_ROWS).map((entry) => (
+                  <button
+                    key={entry.path}
+                    className="churn-row"
+                    onClick={() => {
+                      onSelectFile(entry.path);
+                      setChurnOpen(false);
+                    }}
+                  >
+                    <span className="churn-path">{entry.path}</span>
+                    <span className="churn-count">
+                      {entry.edits} edit{entry.edits === 1 ? "" : "s"}
+                    </span>
+                  </button>
+                ))}
+                {churn.length > CHURN_PANEL_ROWS ? (
+                  <p className="churn-more">…and {churn.length - CHURN_PANEL_ROWS} more</p>
+                ) : null}
+              </div>
+            ) : null}
           </>
         ) : null}
       </div>
@@ -185,6 +278,10 @@ function pct(rate: number): string {
 
 function approx(observability: MetricObservability): string {
   return observability === "estimated" ? "~" : "";
+}
+
+function verifyRuns(count: number): string {
+  return `${count} verify run${count === 1 ? "" : "s"}`;
 }
 
 function rereadHint(observability: MetricObservability): string {

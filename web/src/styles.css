@@ -480,12 +480,100 @@ dd {
   pointer-events: auto;
 }
 
-.hud-quiet + .hud-quiet {
-  margin-top: 3px;
+/* review: the one row allowed to raise its voice — ember marks "worth a
+   second look", pine marks the reassuring counter-signal */
+.hud-review {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 3px 14px;
+  margin-top: 8px;
+  font-size: var(--text-xs);
+  letter-spacing: 0.04em;
+  font-variant-numeric: tabular-nums;
+  pointer-events: auto;
 }
 
-.hud-quiet .warn {
+.review-label {
+  color: var(--faint);
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+}
+
+.hud-review .warn {
   color: var(--ember);
+}
+
+.hud-review .ok {
+  color: var(--pine);
+}
+
+.churn-toggle {
+  font-size: inherit;
+  letter-spacing: inherit;
+  text-decoration: underline dotted oklch(0.73 0.16 52 / 0.6);
+  text-underline-offset: 3px;
+}
+
+.churn-toggle:hover,
+.churn-toggle.open {
+  color: oklch(0.82 0.16 52);
+}
+
+/* drill-down under the review row: which files, how many edits each */
+.churn-panel {
+  display: grid;
+  width: max-content;
+  min-width: 240px;
+  max-width: 340px;
+  margin-top: 8px;
+  padding: 5px;
+  border: 1px solid var(--hairline-strong);
+  border-radius: 5px;
+  background: oklch(0.245 0.014 256 / 0.97);
+  pointer-events: auto;
+}
+
+.churn-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 5px 8px;
+  border-radius: 3px;
+  text-align: left;
+  font-size: var(--text-xs);
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.churn-row:hover {
+  background: var(--panel-raised);
+  color: var(--ink);
+}
+
+.churn-path {
+  direction: rtl; /* ellipsize the head: the tail of a path carries the name */
+  text-align: left;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  unicode-bidi: plaintext;
+}
+
+.churn-count {
+  flex: none;
+  color: var(--faint);
+}
+
+.churn-row:hover .churn-count {
+  color: var(--muted);
+}
+
+.churn-more {
+  padding: 4px 8px 3px;
+  color: var(--faint);
+  font-size: var(--text-xs);
 }
 
 /* instant hover definitions — native title is too slow for an instrument */

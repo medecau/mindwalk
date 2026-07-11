@@ -175,6 +175,22 @@ export default function App() {
     () => (selectedPath ? city?.files.find((file) => file.path === selectedPath) : undefined),
     [city, selectedPath]
   );
+  // mirrors the backend churn definition (stats.churnFiles): per path, the
+  // number of events that carried an edit touch; churn means three or more
+  const churn = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const event of trace?.events ?? []) {
+      for (const target of event.targets) {
+        if (target.touch === "edit" && target.path) {
+          counts.set(target.path, (counts.get(target.path) ?? 0) + 1);
+        }
+      }
+    }
+    return [...counts.entries()]
+      .filter(([, edits]) => edits >= 3)
+      .map(([path, edits]) => ({ path, edits }))
+      .sort((a, b) => b.edits - a.edits || (a.path < b.path ? -1 : 1));
+  }, [trace]);
 
   return (
     <main className={railCollapsed ? "app-frame rail-collapsed" : "app-frame"}>
@@ -215,7 +231,9 @@ export default function App() {
             editedNow={touchCounts.edited}
             readNow={touchCounts.read}
             seenNow={touchCounts.seen}
+            churn={churn}
             onViewChange={setView}
+            onSelectFile={setSelectedPath}
           />
           {selectedFile ? (
             <Inspector
