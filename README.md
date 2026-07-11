@@ -13,9 +13,26 @@ binary; no session data leaves your machine.
 ## Quick start
 
 ```sh
-make setup && make build
-bin/mindwalk
+# Install the latest release on macOS or Linux.
+curl -fsSL https://raw.githubusercontent.com/cosmtrek/mindwalk/master/scripts/install.sh | sh
+export PATH="$HOME/.local/bin:$PATH"
+mindwalk
 ```
+
+The installer downloads the binary for the current OS and CPU from GitHub
+Releases, verifies it against `checksums.txt`, and installs it to
+`~/.local/bin`. Set `INSTALL_DIR` to choose another destination, or `VERSION`
+to install a specific release:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/cosmtrek/mindwalk/master/scripts/install.sh | \
+  VERSION=v0.1.0 INSTALL_DIR=/usr/local/bin sh
+```
+
+Windows archives and all supported platform binaries are available on the
+[GitHub Releases](https://github.com/cosmtrek/mindwalk/releases) page. To build
+from source instead, clone the repository and run `make setup && make build`;
+the binary is written to `bin/mindwalk`.
 
 With no arguments, mindwalk scans `~/.claude/projects` and `~/.codex/sessions`,
 serves the UI on a random local port, and opens a browser. The other commands:
