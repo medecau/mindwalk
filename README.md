@@ -35,10 +35,22 @@ mindwalk trace <session> [-o out]           write the normalized trace JSON
   for glow.
 - **Touch states** — each file keeps the deepest touch it received: seen
   (moss green), read (moon white), edited (warm amber), unvisited (dark). The
-  HUD counts them live, along with re-read and error rates.
-- **Playback deck** — scrub or play the session; the strip under the playhead
-  spells out every event's action (search / read / edit / verify / exec), and
-  recent transitions draw ember trails between files.
+  HUD counts them live and folds friction signals — error rate, files churned
+  3+ times, edits after the last verify — into a review strip.
+- **Playback deck** — scrub or play the session. The strip is a bucketed
+  histogram of the whole run, each bar colored by its dominant action on a
+  cool/warm spectrum: observation stays cool (teal search, moon-blue read,
+  slate exec), mutation glows warm (sodium-amber edit, green verify), so
+  editing phases jump out of the background hum at a glance. Recent
+  transitions draw ember trails between files on the map.
+- **Timeline marks** — the lane above the strip carries the session's
+  structure: `◇` context compactions, `○` subagent launches, `›` user turns
+  (one per typed instruction). Every mark is a click-to-jump target, and the
+  key under the strip decodes all of it.
+- **Inspector** — click any file to pin its touch facts and per-event visit
+  history; clicking a visit row jumps the playhead to that moment.
+
+![the same session on the terrain view](assets/screenshot-terrain.png)
 
 Keyboard: `Space` play/pause · `←`/`→` step (`⇧` ×10) · `Home`/`End` jump to
 the ends · `S` cycle speed · `E` next edit · `X` next error · `M` next mark ·
