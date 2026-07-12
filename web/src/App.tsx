@@ -38,8 +38,10 @@ export default function App() {
     error,
     hideEmpty,
     harnessFilter,
+    projectFilter,
     railCollapsed,
     mapOnly,
+    immersive,
     setView,
     setSessions,
     setProjects,
@@ -54,6 +56,7 @@ export default function App() {
     setError,
     setHideEmpty,
     setHarnessFilter,
+    setProjectFilter,
     setRailCollapsed
   } = useAppStore();
   const urlSessionConsumed = useRef(false);
@@ -110,7 +113,8 @@ export default function App() {
     try {
       const { trace: nextTrace, city: nextCity } = await getProjectSnapshot(key);
       if (generation !== loadGeneration.current || activeProjectKeyRef.current !== key) return;
-      setData(nextTrace, nextCity);
+      // a project plays its merged chronology forward, so open at the beginning
+      setData(nextTrace, nextCity, true);
       setSelectedPath(undefined);
     } catch (err) {
       if (generation === loadGeneration.current && activeProjectKeyRef.current === key) {
@@ -150,9 +154,12 @@ export default function App() {
       const stillListed =
         currentActiveKey !== undefined && data.some((session) => session.key === currentActiveKey);
       // prefer a session the rail will actually show; if the filters hide
-      // everything, the newest session still beats a blank stage
+      // everything, the newest session still beats a blank stage. read the
+      // project pre-filter fresh: a jump from a project row sets it just before
+      // this scan's await resolves
+      const cwd = useAppStore.getState().projectFilter;
       const fallback = (
-        data.find((session) => sessionVisible(session, { hideEmpty, harness: harnessFilter })) ?? data[0]
+        data.find((session) => sessionVisible(session, { hideEmpty, harness: harnessFilter, cwd })) ?? data[0]
       )?.key;
       const next = preferred ?? (stillListed ? currentActiveKey : fallback);
       if (next !== currentActiveKey) {
@@ -230,6 +237,9 @@ export default function App() {
   const changeMode = useCallback((mode: "sessions" | "projects") => {
     if (mode === useAppStore.getState().railMode) return;
     setRailMode(mode);
+    // a plain mode toggle drops any per-project pre-filter, so switching to
+    // Sessions shows every session again
+    setProjectFilter(undefined);
     // clear the outgoing mode's selection so the stage never keeps a stale
     // scene under the new rail (e.g. switching into a mode with no items)
     if (mode === "projects") {
@@ -241,7 +251,15 @@ export default function App() {
       setActiveSession(undefined);
       void scan(false);
     }
-  }, [scan, scanProjects, setRailMode, setActiveProject, setActiveSession]);
+  }, [scan, scanProjects, setRailMode, setActiveProject, setActiveSession, setProjectFilter]);
+
+  // the per-project arrow: switch to Sessions filtered to that project. order
+  // matters — changeMode clears the filter, so set it after the switch (both
+  // run synchronously before scan's await resolves, so its pick still filters)
+  const viewProjectSessions = useCallback((path: string) => {
+    changeMode("sessions");
+    setProjectFilter(path);
+  }, [changeMode, setProjectFilter]);
 
   const selectSession = useCallback((key: string) => {
     activeSessionKeyRef.current = key;
@@ -292,6 +310,7 @@ export default function App() {
   // stable callbacks keep SessionRail's memo effective across playback ticks
   const collapseRail = useCallback(() => setRailCollapsed(true), [setRailCollapsed]);
   const expandRail = useCallback(() => setRailCollapsed(false), [setRailCollapsed]);
+  const clearProjectFilter = useCallback(() => setProjectFilter(undefined), [setProjectFilter]);
 
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
@@ -299,6 +318,26 @@ export default function App() {
       e.preventDefault();
       const store = useAppStore.getState();
       store.setRailCollapsed(!store.railCollapsed);
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, []);
+
+  // immersive view: bare `z` toggles the chrome off, Escape exits. guard like
+  // the Timeline shortcuts so typing in the rail's search box never triggers it
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.metaKey || e.ctrlKey || e.altKey || e.shiftKey) return;
+      const target = e.target as HTMLElement | null;
+      if (target?.closest("input, textarea, select, button, [contenteditable]")) return;
+      const store = useAppStore.getState();
+      if (e.key.toLowerCase() === "z") {
+        e.preventDefault();
+        store.setImmersive(!store.immersive);
+      } else if (e.key === "Escape" && store.immersive) {
+        e.preventDefault();
+        store.setImmersive(false);
+      }
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
@@ -364,8 +403,12 @@ export default function App() {
   // loaded project is never covered by a "No sessions found" overlay
   const railEmpty = railMode === "projects" ? projects.length === 0 : sessions.length === 0;
 
+  const frameClass = ["app-frame", mapOnly || railCollapsed ? "rail-collapsed" : "", immersive ? "immersive" : ""]
+    .filter(Boolean)
+    .join(" ");
+
   return (
-    <main className={mapOnly ? "app-frame rail-collapsed" : railCollapsed ? "app-frame rail-collapsed" : "app-frame"}>
+    <main className={frameClass}>
       {mapOnly ? null : (
         <SessionRail
           sessions={sessions}
@@ -376,9 +419,12 @@ export default function App() {
           loading={loading}
           hideEmpty={hideEmpty}
           harnessFilter={harnessFilter}
+          projectFilter={projectFilter}
           collapsed={railCollapsed}
           onSelect={selectSession}
           onSelectProject={selectProject}
+          onViewProjectSessions={viewProjectSessions}
+          onClearProjectFilter={clearProjectFilter}
           onModeChange={changeMode}
           onRefresh={refresh}
           onHideEmptyChange={setHideEmpty}

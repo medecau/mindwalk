@@ -64,7 +64,8 @@ mindwalk trace <session> [-o out]           write the normalized trace JSON
 ![the same session on the terrain view](assets/screenshot-terrain.png)
 
 Keyboard: `Space` play/pause · `←`/`→` step (`⇧` ×10) · `Home`/`End` ends ·
-`S` speed · `E` next edit · `X` next error · `M` next mark · `⌘B` session rail.
+`S` speed · `E` next edit · `X` next error · `M` next mark · `⌘B` session rail ·
+`Z` immersive (scene only; `Z`/`Esc` to exit).
 
 ## Under the hood
 

@@ -554,9 +554,14 @@ export function TreeScene({
       const touch = playback.touchByFile.get(file.id);
       let leafColor = file.ghost ? colors.ghost : colors.unvisited;
       if (touch) {
-        leafColor = colors[touch];
+        // an older session's leaf + halo fade as newer ones run: color dims
+        // toward the unvisited tone and the halo shrinks (decay defaults to 1
+        // outside a multi-session project view, leaving this unchanged)
+        const decay = playback.decayBySource.get(playback.sourceByFile.get(file.id) ?? -1) ?? 1;
+        const faded = colors[touch].clone().lerp(colors.unvisited, 1 - decay);
+        leafColor = faded;
         const visits = playback.visitsByFile.get(file.id) ?? 1;
-        slots.push({ fileId: file.id, target: haloRadius(visits), color: colors[touch] });
+        slots.push({ fileId: file.id, target: haloRadius(visits) * decay, color: faded });
         present.add(file.id);
         const parts = file.path.split("/");
         let path = "";

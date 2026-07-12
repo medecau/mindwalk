@@ -496,6 +496,43 @@ dd {
   border-radius: 2px;
 }
 
+/* project row: the select button fills the row, the sessions-jump arrow sits
+   beside it as a sibling (never a nested button) */
+.project-row {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.project-row .session-row {
+  flex: 1;
+  min-width: 0;
+}
+
+/* the sessions-jump arrow, modeled on .icon-btn but muted until hover */
+.project-jump {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 4px;
+  color: var(--faint);
+}
+
+.project-jump:hover {
+  color: var(--ink);
+  background: var(--panel-raised);
+}
+
+/* pinned-project chip: name + × to clear, shaped like a filter chip */
+.project-filter-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
 .rail-foot {
   padding: 10px 18px 14px;
   border-top: 1px solid var(--hairline);
@@ -1676,6 +1713,21 @@ dd {
   .deck-pos {
     display: none;
   }
+}
+
+/* ---------- immersive view ---------- */
+
+/* hide every overlay, leaving only the 3D scene (.viewport). nothing unmounts,
+   so the Timeline's playback interval and the window key handlers keep running
+   and the animation continues; press z or Esc to restore the chrome */
+.app-frame.immersive .session-rail,
+.app-frame.immersive .hud,
+.app-frame.immersive .deck,
+.app-frame.immersive .rail-expand,
+.app-frame.immersive .inspector,
+.app-frame.immersive .toast,
+.app-frame.immersive .empty-stage {
+  display: none;
 }
 
 /* the key is reference material; below this the caption line belongs to the summary */

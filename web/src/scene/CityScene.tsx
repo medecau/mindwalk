@@ -533,10 +533,14 @@ export function CityScene({
       tiles.setColorAt(file.id, selected ? colors.selected : baseColor(file));
       if (touch) {
         const visits = playback.visitsByFile.get(file.id) ?? 1;
-        let color = colors[touch];
-        if (file.ghost) color = color.clone().lerp(colors.ghost, 0.45);
+        // an older session's terrain fades as newer ones run: dim toward the
+        // unvisited tone and sink the column toward the plain (decay defaults
+        // to 1 outside a multi-session project view, leaving this unchanged)
+        const decay = playback.decayBySource.get(playback.sourceByFile.get(file.id) ?? -1) ?? 1;
+        let color = colors[touch].clone().lerp(colors.unvisited, 1 - decay);
+        if (file.ghost) color = color.lerp(colors.ghost, 0.45);
         if (selected) color = colors.selected;
-        slots.push({ fileId: file.id, target: attentionHeight(touch, visits), color });
+        slots.push({ fileId: file.id, target: attentionHeight(touch, visits) * decay, color });
         present.add(file.id);
       } else if (locHeights) {
         const t = locFraction(file.lines, maxLog);

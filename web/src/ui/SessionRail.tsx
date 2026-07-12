@@ -1,4 +1,4 @@
-import { Eye, EyeOff, FolderOpen, PanelLeftClose, RefreshCw, Search } from "lucide-react";
+import { ChevronRight, Eye, EyeOff, FolderOpen, PanelLeftClose, RefreshCw, Search, X } from "lucide-react";
 import { memo, useMemo, useState } from "react";
 import { sessionVisible } from "../state/filters";
 import type { RailMode } from "../state/store";
@@ -16,9 +16,13 @@ interface SessionRailProps {
   loading: boolean;
   hideEmpty: boolean;
   harnessFilter?: string;
+  // in Sessions mode, the project path the list is pinned to (from a row's arrow)
+  projectFilter?: string;
   collapsed: boolean;
   onSelect: (key: string) => void;
   onSelectProject: (key: string) => void;
+  onViewProjectSessions: (path: string) => void;
+  onClearProjectFilter: () => void;
   onModeChange: (mode: RailMode) => void;
   onRefresh: () => void;
   onHideEmptyChange: (hide: boolean) => void;
@@ -45,9 +49,12 @@ export const SessionRail = memo(function SessionRail({
   loading,
   hideEmpty,
   harnessFilter,
+  projectFilter,
   collapsed,
   onSelect,
   onSelectProject,
+  onViewProjectSessions,
+  onClearProjectFilter,
   onModeChange,
   onRefresh,
   onHideEmptyChange,
@@ -66,13 +73,21 @@ export const SessionRail = memo(function SessionRail({
   const shown = useMemo(() => {
     const q = query.trim().toLowerCase();
     return sessions.filter((session) => {
-      if (!sessionVisible(session, { hideEmpty, harness: effectiveHarness }, activeKey)) return false;
+      if (!sessionVisible(session, { hideEmpty, harness: effectiveHarness, cwd: projectFilter }, activeKey))
+        return false;
       if (!q) return true;
       return `${session.title ?? ""} ${session.id} ${session.gitBranch ?? ""} ${session.harness}`
         .toLowerCase()
         .includes(q);
     });
-  }, [sessions, query, hideEmpty, effectiveHarness, activeKey]);
+  }, [sessions, query, hideEmpty, effectiveHarness, projectFilter, activeKey]);
+  // label the pinned-project chip with the project's name; fall back to the last
+  // path segment if the project isn't in the current list
+  const projectFilterName = useMemo(() => {
+    if (!projectFilter) return undefined;
+    const match = projects.find((project) => project.path === projectFilter);
+    return match?.name ?? projectFilter.split("/").filter(Boolean).pop() ?? projectFilter;
+  }, [projectFilter, projects]);
   const shownProjects = useMemo(() => {
     const q = query.trim().toLowerCase();
     if (!q) return projects;
@@ -167,31 +182,59 @@ export const SessionRail = memo(function SessionRail({
             ) : null}
           </div>
         ) : null}
+        {!isProjects && projectFilter ? (
+          <div className="rail-chips" role="group" aria-label="Project filter">
+            <button
+              className="chip active project-filter-chip"
+              onClick={onClearProjectFilter}
+              title="Show all sessions"
+              aria-label={`Clear project filter: ${projectFilterName}`}
+            >
+              <span>{projectFilterName}</span>
+              <X size={12} aria-hidden />
+            </button>
+          </div>
+        ) : null}
       </div>
       <div className="session-list" aria-busy={loading}>
         {isProjects
           ? shownProjects.map((project) => (
-              <button
-                key={project.key}
-                className={project.key === activeProjectKey ? "session-row active" : "session-row"}
-                onClick={() => onSelectProject(project.key)}
-                title={project.path}
-                disabled={locked}
-              >
-                <span className="session-title">{project.name}</span>
-                <span className="session-meta">
-                  <span className="project-swatches" aria-hidden>
-                    {Array.from({ length: Math.min(project.sessionCount, MAX_SWATCHES) }).map((_, i) => (
-                      <span key={i} className="session-swatch" style={{ background: sessionColorHex(i) }} />
-                    ))}
+              // row wrapper: the select button and the sessions-jump arrow are
+              // siblings, never nested, so we don't put a button inside a button
+              <div key={project.key} className="project-row">
+                <button
+                  className={project.key === activeProjectKey ? "session-row active" : "session-row"}
+                  onClick={() => onSelectProject(project.key)}
+                  title={project.path}
+                  disabled={locked}
+                >
+                  <span className="session-title">{project.name}</span>
+                  <span className="session-meta">
+                    <span className="project-swatches" aria-hidden>
+                      {Array.from({ length: Math.min(project.sessionCount, MAX_SWATCHES) }).map((_, i) => (
+                        <span key={i} className="session-swatch" style={{ background: sessionColorHex(i) }} />
+                      ))}
+                    </span>
+                    <span className="session-meta-text">
+                      {project.sessionCount} session{project.sessionCount === 1 ? "" : "s"} · {project.eventCount}{" "}
+                      {project.eventCount === 1 ? "call" : "calls"}
+                      {project.endedAt ? ` · ${shortDate(project.endedAt)}` : ""}
+                    </span>
                   </span>
-                  <span className="session-meta-text">
-                    {project.sessionCount} session{project.sessionCount === 1 ? "" : "s"} · {project.eventCount}{" "}
-                    {project.eventCount === 1 ? "call" : "calls"}
-                    {project.endedAt ? ` · ${shortDate(project.endedAt)}` : ""}
-                  </span>
-                </span>
-              </button>
+                </button>
+                <button
+                  className="project-jump"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onViewProjectSessions(project.path);
+                  }}
+                  title={`Show ${project.name} sessions`}
+                  aria-label={`Show ${project.name} sessions`}
+                  disabled={locked}
+                >
+                  <ChevronRight size={16} />
+                </button>
+              </div>
             ))
           : shown.map((session) => (
               <button
