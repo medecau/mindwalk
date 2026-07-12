@@ -1463,23 +1463,63 @@ dd {
   white-space: nowrap;
 }
 
-/* project mode: the session key rides its own full-width wrapping row so it
-   never crowds the readout or the action/mark key in the tight caption line */
+/* project mode: the session key rides its own full-width row so it never
+   crowds the readout or the action/mark key in the tight caption line. It
+   clamps to a single row; the chevron expands it when sessions spill over. */
 .deck-sessions {
   display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 5px 14px;
+  align-items: flex-start;
+  gap: 8px;
   color: var(--faint);
   font-size: 0.68rem;
   letter-spacing: 0.05em;
 }
 
 .deck-sessions-label {
+  flex: none;
+  padding-top: 1px;
   color: var(--muted);
   font-size: 0.6rem;
   letter-spacing: 0.14em;
   text-transform: uppercase;
+}
+
+.deck-sessions-items {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 5px 14px;
+  max-height: 1.45em; /* one row; the rest is clipped until expanded */
+  overflow: hidden;
+}
+
+.deck-sessions-items.expanded {
+  max-height: none;
+  overflow: visible;
+}
+
+.deck-sessions-toggle {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1px;
+  border-radius: 4px;
+  color: var(--faint);
+}
+
+.deck-sessions-toggle:hover {
+  color: var(--ink);
+}
+
+.deck-sessions-toggle svg {
+  transition: transform 0.15s ease-out;
+}
+
+.deck-sessions-toggle[aria-expanded="true"] svg {
+  transform: rotate(180deg);
 }
 
 .legend-group {

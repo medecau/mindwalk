@@ -1,4 +1,4 @@
-import { Loader, Pause, Play, RotateCcw, StepBack, StepForward, Video } from "lucide-react";
+import { ChevronDown, Loader, Pause, Play, RotateCcw, StepBack, StepForward, Video } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { sessionColorHex } from "../scene/sessionColors";
 import type { Action, Mark, Trace, TraceEvent, TraceSource } from "../types";
@@ -44,6 +44,10 @@ const STRIP_ACTIONS: Action[] = ["search", "read", "edit", "verify", "exec"];
 export function Timeline({ trace, currentSeq, onChange, onExport, exporting = false }: TimelineProps) {
   const [playing, setPlaying] = useState(false);
   const [speed, setSpeed] = useState<Speed>(1);
+  // the session key collapses to one row; expand reveals the rest
+  const [sessionsExpanded, setSessionsExpanded] = useState(false);
+  const [sessionsOverflow, setSessionsOverflow] = useState(false);
+  const sessionItemsRef = useRef<HTMLDivElement | null>(null);
   const total = trace?.events.length ?? 0;
   const max = Math.max(0, total - 1);
   const seq = Math.min(currentSeq, max);
@@ -54,6 +58,7 @@ export function Timeline({ trace, currentSeq, onChange, onExport, exporting = fa
 
   useEffect(() => {
     setPlaying(false);
+    setSessionsExpanded(false);
   }, [trace]);
 
   // while a video export is recording, the recorder owns the playhead — force
@@ -61,6 +66,26 @@ export function Timeline({ trace, currentSeq, onChange, onExport, exporting = fa
   useEffect(() => {
     if (exporting) setPlaying(false);
   }, [exporting]);
+
+  // show the expand arrow only when the session legend spills past one row.
+  // scrollHeight reports the full content height even while the row is clamped,
+  // so this stays correct whether the band is collapsed or expanded.
+  useEffect(() => {
+    const el = sessionItemsRef.current;
+    if (!el || !multiSession) {
+      setSessionsOverflow(false);
+      return;
+    }
+    const measure = () => {
+      const first = el.firstElementChild as HTMLElement | null;
+      const row = first?.offsetHeight ?? 16;
+      setSessionsOverflow(el.scrollHeight > row * 1.5);
+    };
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [multiSession, sources]);
 
   // the timer and shortcuts read position via refs so ticking doesn't tear them down
   const seqRef = useRef(seq);
@@ -418,14 +443,31 @@ export function Timeline({ trace, currentSeq, onChange, onExport, exporting = fa
         </div>
       </div>
       {multiSession && sources ? (
-        <div className="deck-sessions" aria-hidden>
+        <div className="deck-sessions">
           <span className="deck-sessions-label">sessions</span>
-          {sources.map((source, i) => (
-            <span key={source.key} className="legend-item" title={sourceTitle(sources, i)}>
-              <span className="session-swatch" style={{ background: sessionColorHex(i) }} />
-              {sourceLabel(sources, i)}
-            </span>
-          ))}
+          <div
+            className={sessionsExpanded ? "deck-sessions-items expanded" : "deck-sessions-items"}
+            ref={sessionItemsRef}
+            aria-hidden
+          >
+            {sources.map((source, i) => (
+              <span key={source.key} className="legend-item" title={sourceTitle(sources, i)}>
+                <span className="session-swatch" style={{ background: sessionColorHex(i) }} />
+                {sourceLabel(sources, i)}
+              </span>
+            ))}
+          </div>
+          {sessionsOverflow ? (
+            <button
+              className="deck-sessions-toggle"
+              onClick={() => setSessionsExpanded((v) => !v)}
+              aria-expanded={sessionsExpanded}
+              title={sessionsExpanded ? "Show fewer sessions" : "Show all sessions"}
+              aria-label={sessionsExpanded ? "Show fewer sessions" : "Show all sessions"}
+            >
+              <ChevronDown size={13} />
+            </button>
+          ) : null}
         </div>
       ) : null}
     </footer>
