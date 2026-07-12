@@ -2,6 +2,7 @@ package citymap
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"io"
 	"math"
@@ -17,25 +18,57 @@ import (
 
 type Builder struct{}
 
-func (Builder) Build(repoRoot string, trace *model.Trace) (*model.CityMap, error) {
+// Progress reports build progress. Phase is "scan" while the file list is being
+// enumerated (total unknown, reported as 0) and "read" while each file is being
+// inspected (total is the file count). It is called on a best-effort cadence,
+// not once per file.
+type Progress func(phase string, done, total int)
+
+// IsRepo reports whether root sits inside a git work tree. The server uses it as
+// a cheap gate: a repo builds from `git ls-files` (bounded and fast), while a
+// non-repo root would fall back to walking the whole directory tree — expensive
+// enough that the user is asked to opt in first.
+func IsRepo(root string) bool {
+	abs, err := filepath.Abs(root)
+	if err != nil {
+		return false
+	}
+	out, err := gitCommand(abs, "rev-parse", "--is-inside-work-tree").Output()
+	return err == nil && strings.TrimSpace(string(out)) == "true"
+}
+
+func (b Builder) Build(repoRoot string, trace *model.Trace) (*model.CityMap, error) {
+	return b.BuildContext(context.Background(), repoRoot, trace, nil)
+}
+
+// BuildContext is Build with cancellation and progress reporting. Cancelling ctx
+// (e.g. the user aborts, or the SSE client disconnects) stops the walk promptly
+// and returns ctx.Err(). progress may be nil.
+func (Builder) BuildContext(ctx context.Context, repoRoot string, trace *model.Trace, progress Progress) (*model.CityMap, error) {
 	root, err := filepath.Abs(repoRoot)
 	if err != nil {
 		return nil, err
 	}
-	files, err := listFiles(root)
+	files, err := listFilesContext(ctx, root, progress)
 	if err != nil {
 		return nil, err
 	}
 
 	seen := map[string]bool{}
 	cityFiles := make([]model.CityFile, 0, len(files))
-	for _, rel := range files {
+	for i, rel := range files {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		meta, err := inspectFile(root, rel)
 		if err != nil {
 			continue
 		}
 		seen[rel] = true
 		cityFiles = append(cityFiles, meta)
+		if progress != nil && (i&255 == 0 || i == len(files)-1) {
+			progress("read", i+1, len(files))
+		}
 	}
 
 	if trace != nil {
@@ -95,16 +128,24 @@ func (Builder) Build(repoRoot string, trace *model.Trace) (*model.CityMap, error
 // -c overrides the repo config, so we force those exec vectors off before
 // touching an untrusted tree.
 func gitCommand(root string, args ...string) *exec.Cmd {
+	return gitCommandContext(context.Background(), root, args...)
+}
+
+func gitCommandContext(ctx context.Context, root string, args ...string) *exec.Cmd {
 	full := append([]string{
 		"-c", "core.fsmonitor=false",
 		"-c", "core.hooksPath=/dev/null",
 		"-C", root,
 	}, args...)
-	return exec.Command("git", full...)
+	return exec.CommandContext(ctx, "git", full...)
 }
 
 func listFiles(root string) ([]string, error) {
-	cmd := gitCommand(root, "ls-files", "-co", "--exclude-standard", "-z")
+	return listFilesContext(context.Background(), root, nil)
+}
+
+func listFilesContext(ctx context.Context, root string, progress Progress) ([]string, error) {
+	cmd := gitCommandContext(ctx, root, "ls-files", "-co", "--exclude-standard", "-z")
 	out, err := cmd.Output()
 	if err == nil && len(out) > 0 {
 		parts := bytes.Split(out, []byte{0})
@@ -117,11 +158,20 @@ func listFiles(root string) ([]string, error) {
 		}
 		return files, nil
 	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 
+	// Not a git repo (or git unavailable): walk the tree. This is the expensive
+	// path the server gates behind user consent, so it reports scan progress and
+	// bails out promptly when ctx is cancelled.
 	var files []string
-	err = filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
+	walkErr := filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
+		}
+		if err := ctx.Err(); err != nil {
+			return err
 		}
 		if entry.IsDir() {
 			switch entry.Name() {
@@ -135,10 +185,13 @@ func listFiles(root string) ([]string, error) {
 			return err
 		}
 		files = append(files, filepath.ToSlash(rel))
+		if progress != nil && len(files)&511 == 0 {
+			progress("scan", len(files), 0)
+		}
 		return nil
 	})
-	if err != nil {
-		return nil, err
+	if walkErr != nil {
+		return nil, walkErr
 	}
 	if len(files) == 0 {
 		return nil, errors.New("no files found")

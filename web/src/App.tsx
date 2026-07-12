@@ -1,12 +1,15 @@
 import { PanelLeftOpen } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
+  buildProject,
   describeError,
   getProjectSnapshot,
   getRepoMap,
   getSessionSnapshot,
+  isCancel,
   listProjects,
-  listSessions
+  listSessions,
+  type BuildProgress
 } from "./api/client";
 import { PlaybackEngine } from "./playback/reducer";
 import { downloadBlob, recordingSupported, recordPlayback } from "./playback/recorder";
@@ -17,6 +20,7 @@ import { sessionVisible } from "./state/filters";
 import { useAppStore } from "./state/store";
 import { Hud } from "./ui/Hud";
 import { Inspector } from "./ui/Inspector";
+import { ProjectBuildGate } from "./ui/ProjectBuildGate";
 import { SessionRail } from "./ui/SessionRail";
 import { toggleRailShortcut } from "./ui/shortcuts";
 import { Timeline } from "./ui/Timeline";
@@ -71,6 +75,10 @@ export default function App() {
   const [exporting, setExporting] = useState(false);
   const activeProjectKeyRef = useRef(activeProjectKey);
   activeProjectKeyRef.current = activeProjectKey;
+  // non-repo project consent gate + live build progress
+  const [buildGate, setBuildGate] = useState<{ key: string; root: string } | undefined>();
+  const [buildProgress, setBuildProgress] = useState<BuildProgress | null>(null);
+  const buildHandleRef = useRef<{ cancel: () => void } | null>(null);
 
   // scenes hand up their live <canvas> so the video exporter can capture it;
   // stable identity keeps the scene mount effect from remounting on every render
@@ -88,8 +96,18 @@ export default function App() {
     if (pendingLoads.current === 0) setLoading(false);
   }, [setLoading]);
 
+  // abandon any in-flight build and drop the consent gate — used when the active
+  // view changes out from under a pending or streaming build
+  const resetBuild = useCallback(() => {
+    buildHandleRef.current?.cancel();
+    buildHandleRef.current = null;
+    setBuildProgress(null);
+    setBuildGate(undefined);
+  }, []);
+
   const loadSession = useCallback(async (key: string) => {
     const generation = ++loadGeneration.current;
+    resetBuild();
     beginLoading();
     setError(undefined);
     try {
@@ -104,18 +122,21 @@ export default function App() {
     } finally {
       endLoading();
     }
-  }, [beginLoading, endLoading, setData, setError, setSelectedPath]);
+  }, [beginLoading, endLoading, resetBuild, setData, setError, setSelectedPath]);
 
   const loadProject = useCallback(async (key: string) => {
     const generation = ++loadGeneration.current;
+    resetBuild();
     beginLoading();
     setError(undefined);
     try {
-      const { trace: nextTrace, city: nextCity } = await getProjectSnapshot(key);
+      const { trace: nextTrace, city: nextCity, build } = await getProjectSnapshot(key);
       if (generation !== loadGeneration.current || activeProjectKeyRef.current !== key) return;
       // a project plays its merged chronology forward, so open at the beginning
       setData(nextTrace, nextCity, true);
       setSelectedPath(undefined);
+      // a non-repo root leaves the map unbuilt; offer the opt-in build instead
+      setBuildGate(build?.status === "consent-required" ? { key, root: build.root ?? "" } : undefined);
     } catch (err) {
       if (generation === loadGeneration.current && activeProjectKeyRef.current === key) {
         setError(describeError(err, "loading the project"));
@@ -123,7 +144,36 @@ export default function App() {
     } finally {
       endLoading();
     }
-  }, [beginLoading, endLoading, setData, setError, setSelectedPath]);
+  }, [beginLoading, endLoading, resetBuild, setData, setError, setSelectedPath]);
+
+  const startBuild = useCallback((key: string) => {
+    setBuildProgress({ phase: "scan", done: 0, total: 0 });
+    const handle = buildProject(key, (p) => {
+      if (activeProjectKeyRef.current === key) setBuildProgress(p);
+    });
+    buildHandleRef.current = handle;
+    handle.promise
+      .then((data) => {
+        if (activeProjectKeyRef.current !== key) return;
+        setData(data.trace, data.city, true);
+        setBuildGate(undefined);
+        setBuildProgress(null);
+        buildHandleRef.current = null;
+      })
+      .catch((err) => {
+        if (buildHandleRef.current === handle) buildHandleRef.current = null;
+        if (activeProjectKeyRef.current !== key) return;
+        // a cancel drops back to the consent card; a real failure also toasts
+        setBuildProgress(null);
+        if (!isCancel(err)) setError(describeError(err, "building the project map"));
+      });
+  }, [setData, setError]);
+
+  const cancelBuild = useCallback(() => {
+    buildHandleRef.current?.cancel();
+    buildHandleRef.current = null;
+    setBuildProgress(null);
+  }, []);
 
   const scan = useCallback(async (fresh: boolean) => {
     const generation = ++scanGeneration.current;
@@ -486,6 +536,14 @@ export default function App() {
               history={playback.historyByPath.get(selectedFile.path) ?? []}
               onClose={() => setSelectedPath(undefined)}
               onJumpTo={setCurrentSeq}
+            />
+          ) : null}
+          {buildGate ? (
+            <ProjectBuildGate
+              root={buildGate.root}
+              progress={buildProgress}
+              onBuild={() => startBuild(buildGate.key)}
+              onCancel={cancelBuild}
             />
           ) : null}
           {!mapOnly && !loading && railEmpty ? (

@@ -1660,6 +1660,133 @@ dd {
   color: var(--ink);
 }
 
+/* ---------- project build gate ---------- */
+
+/* overlays the (empty) scene when a non-repo project needs an opt-in build */
+.project-gate {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  background: oklch(0.16 0.01 254 / 0.55);
+  backdrop-filter: blur(2px);
+  z-index: 6;
+}
+
+.project-gate .card {
+  width: min(420px, 86%);
+  padding: 26px 26px 22px;
+  border: 1px solid var(--hairline-strong);
+  border-radius: 10px;
+  background: var(--panel);
+  text-align: center;
+  color: var(--muted);
+  line-height: 1.6;
+  font-size: var(--text-sm);
+  box-shadow: 0 18px 50px oklch(0 0 0 / 0.4);
+}
+
+.project-gate-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  margin-bottom: 12px;
+  border-radius: 9px;
+  color: var(--amber);
+  background: oklch(0.79 0.13 68 / 0.12);
+}
+
+.project-gate .card h2 {
+  font-family: var(--font-display);
+  font-style: italic;
+  font-weight: 480;
+  font-size: var(--text-lg);
+  margin-bottom: 8px;
+  color: var(--ink);
+}
+
+.project-gate .card code {
+  color: var(--ink);
+  overflow-wrap: anywhere;
+}
+
+.project-gate-btn {
+  margin-top: 16px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 8px 18px;
+  border-radius: 6px;
+  border: 1px solid var(--amber);
+  background: oklch(0.79 0.13 68 / 0.14);
+  color: oklch(0.95 0.02 88);
+  font-size: var(--text-sm);
+  font-weight: 560;
+}
+
+.project-gate-btn:hover {
+  background: oklch(0.79 0.13 68 / 0.24);
+}
+
+.project-gate-btn.ghost {
+  border-color: var(--hairline-strong);
+  background: transparent;
+  color: var(--muted);
+}
+
+.project-gate-btn.ghost:hover {
+  color: var(--ink);
+  background: var(--panel-raised);
+}
+
+.project-gate-progress {
+  margin-top: 18px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+}
+
+.project-gate-count {
+  font-size: var(--text-xs);
+  letter-spacing: 0.04em;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.project-gate-bar {
+  width: 100%;
+  height: 5px;
+  border-radius: 3px;
+  overflow: hidden;
+  background: var(--panel-raised);
+}
+
+.project-gate-bar-fill {
+  height: 100%;
+  border-radius: 3px;
+  background: var(--amber);
+  transition: width 0.2s ease;
+}
+
+/* scan phase has no known total: sweep an indeterminate shimmer instead */
+.project-gate-bar[data-indeterminate="true"] .project-gate-bar-fill {
+  width: 40% !important;
+  animation: gate-sweep 1.1s ease-in-out infinite;
+}
+
+@keyframes gate-sweep {
+  0% {
+    margin-left: -40%;
+  }
+  100% {
+    margin-left: 100%;
+  }
+}
+
 /* ---------- responsive ---------- */
 
 @media (max-width: 900px) {

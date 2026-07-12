@@ -58,6 +58,12 @@ type Server struct {
 	summaries map[string]summaryCacheEntry
 	repoMaps  map[string]repoMapEntry
 	repoMapMu sync.Mutex
+	// merged project results, memoized by a signature of their member files so a
+	// project view re-parses and re-builds the citymap only when a member changes
+	projectTraces map[string]*model.Trace
+	projectMaps   map[string]*model.CityMap
+	projectSig    map[string]string
+	projectAt     map[string]time.Time
 }
 
 type repoMapEntry struct {
@@ -106,6 +112,11 @@ func New(cfg Config) *Server {
 		inflight:  map[string]*inflightLoad{},
 		summaries: map[string]summaryCacheEntry{},
 		repoMaps:  map[string]repoMapEntry{},
+
+		projectTraces: map[string]*model.Trace{},
+		projectMaps:   map[string]*model.CityMap{},
+		projectSig:    map[string]string{},
+		projectAt:     map[string]time.Time{},
 	}
 }
 
@@ -318,7 +329,11 @@ func (s *Server) handleProjectResource(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	key, resource := parts[0], parts[1]
-	trace, city, err := s.projectTraceAndMap(key)
+	if resource == "build" {
+		s.handleProjectBuild(w, r, key)
+		return
+	}
+	trace, city, build, err := s.projectTraceAndMap(key)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusNotFound)
 		return
@@ -328,7 +343,8 @@ func (s *Server) handleProjectResource(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, struct {
 			Trace *model.Trace   `json:"trace"`
 			City  *model.CityMap `json:"city"`
-		}{Trace: trace, City: city})
+			Build *projectBuild  `json:"build,omitempty"`
+		}{Trace: trace, City: city, Build: build})
 	case "trace":
 		writeJSON(w, trace)
 	case "citymap":
@@ -393,17 +409,25 @@ func groupProjects(sessions []model.SessionMeta) []model.ProjectMeta {
 	return projects
 }
 
-// projectTraceAndMap merges every session in a project into one chronological
-// trace and builds a single citymap from the project's repository root. Member
-// traces come from the per-session cache; aggregate.Merge copies the events it
-// keeps, so assigning project file IDs here never mutates those cached traces.
-func (s *Server) projectTraceAndMap(key string) (*model.Trace, *model.CityMap, error) {
+// projectBuild describes the state of a project's citymap in a snapshot.
+// "ready" means the map is built; "consent-required" means the project's root is
+// not a git repository, so building it would mean walking the whole directory
+// tree — the client shows an opt-in with progress before that runs.
+type projectBuild struct {
+	Status string `json:"status"`
+	Root   string `json:"root,omitempty"`
+}
+
+// projectMembers returns the sessions that belong to a project (share its cwd),
+// its cleaned working directory, and a signature of the member set. The
+// signature changes whenever a member's file changes or a member is added or
+// removed, which is exactly when a memoized merge must be rebuilt.
+func (s *Server) projectMembers(key string) (members []model.SessionMeta, cwd, sig string, err error) {
 	sessions, err := s.listSessions()
 	if err != nil {
-		return nil, nil, err
+		return nil, "", "", err
 	}
-	var inputs []aggregate.Input
-	cwd := ""
+	var parts []string
 	for _, meta := range sessions {
 		if meta.Cwd == "" || projectKey(filepath.Clean(meta.Cwd)) != key {
 			continue
@@ -411,20 +435,74 @@ func (s *Server) projectTraceAndMap(key string) (*model.Trace, *model.CityMap, e
 		if cwd == "" {
 			cwd = filepath.Clean(meta.Cwd)
 		}
-		trace, _, err := s.traceAndMap(meta.Key)
-		if err != nil || trace == nil {
+		members = append(members, meta)
+		if fp, ferr := fingerprintFile(meta.Path); ferr == nil {
+			parts = append(parts, fmt.Sprintf("%s:%d:%d", meta.Key, fp.size, fp.modTime.UnixNano()))
+		}
+	}
+	if len(members) == 0 {
+		return nil, "", "", errors.New("project not found")
+	}
+	sort.Strings(parts)
+	sum := sha256.Sum256([]byte(strings.Join(parts, "\n")))
+	return members, cwd, fmt.Sprintf("%x", sum[:16]), nil
+}
+
+// projectMergedTrace parses each member's trace (trace only — no per-session
+// citymap build, which for a project was the dominant cost) and merges them into
+// one chronological, source-tagged project trace. Stats are left for the caller
+// to compute against the project citymap.
+func (s *Server) projectMergedTrace(members []model.SessionMeta, cwd, key string) *model.Trace {
+	var inputs []aggregate.Input
+	for _, meta := range members {
+		source := s.adapterForHarness(meta.Harness)
+		if source == nil {
+			continue
+		}
+		trace, perr := source.Parse(meta.Path)
+		if perr != nil || trace == nil {
 			continue
 		}
 		inputs = append(inputs, aggregate.Input{Meta: meta, Trace: trace})
 	}
 	if len(inputs) == 0 {
-		return nil, nil, errors.New("project not found")
+		return nil
 	}
-
 	merged := aggregate.Merge(inputs)
 	merged.Session.ID = key
 	merged.Session.Title = projectName(cwd)
 	merged.Session.Cwd = cwd
+	return merged
+}
+
+// projectTraceAndMap returns a project's merged trace, its citymap, and the build
+// state. A memoized result is served while the member set is unchanged and
+// fresh. When the root is not a git repo the citymap is left empty and the state
+// is "consent-required" — the client then drives the cancellable /build stream.
+func (s *Server) projectTraceAndMap(key string) (*model.Trace, *model.CityMap, *projectBuild, error) {
+	members, cwd, sig, err := s.projectMembers(key)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+
+	s.mu.Lock()
+	if s.projectSig[key] == sig && s.projectMaps[key] != nil && time.Since(s.projectAt[key]) < traceCacheTTL {
+		trace, city := s.projectTraces[key], s.projectMaps[key]
+		s.projectAt[key] = time.Now()
+		s.mu.Unlock()
+		return trace, city, &projectBuild{Status: "ready"}, nil
+	}
+	s.mu.Unlock()
+
+	merged := s.projectMergedTrace(members, cwd, key)
+	if merged == nil {
+		return nil, nil, nil, errors.New("project not found")
+	}
+
+	if !citymap.IsRepo(cwd) {
+		merged.Stats = model.ComputeStats(merged, 0, "")
+		return merged, emptyCityMap(cwd), &projectBuild{Status: "consent-required", Root: cwd}, nil
+	}
 
 	city, err := citymap.Builder{}.Build(cwd, merged)
 	if err != nil {
@@ -433,7 +511,72 @@ func (s *Server) projectTraceAndMap(key string) (*model.Trace, *model.CityMap, e
 		assignFileIDs(merged, city)
 	}
 	merged.Stats = model.ComputeStats(merged, repoFileCount(city), "")
-	return merged, city, nil
+	s.storeProjectResult(key, sig, merged, city)
+	return merged, city, &projectBuild{Status: "ready"}, nil
+}
+
+func (s *Server) storeProjectResult(key, sig string, trace *model.Trace, city *model.CityMap) {
+	s.mu.Lock()
+	s.projectTraces[key] = trace
+	s.projectMaps[key] = city
+	s.projectSig[key] = sig
+	s.projectAt[key] = time.Now()
+	s.mu.Unlock()
+}
+
+// handleProjectBuild streams a project citymap build as Server-Sent Events:
+// "progress" events while scanning/reading files, then a final "done" event
+// carrying the trace and built citymap. It is the consented path for a non-repo
+// root. Cancelling the request (the client closing the stream) cancels the walk.
+func (s *Server) handleProjectBuild(w http.ResponseWriter, r *http.Request, key string) {
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		http.Error(w, "streaming unsupported", http.StatusInternalServerError)
+		return
+	}
+	members, cwd, sig, err := s.projectMembers(key)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusNotFound)
+		return
+	}
+	merged := s.projectMergedTrace(members, cwd, key)
+	if merged == nil {
+		http.Error(w, "project not found", http.StatusNotFound)
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.WriteHeader(http.StatusOK)
+	flusher.Flush()
+
+	send := func(event string, payload any) {
+		data, _ := json.Marshal(payload)
+		fmt.Fprintf(w, "event: %s\ndata: %s\n\n", event, data)
+		flusher.Flush()
+	}
+
+	// BuildContext calls progress inline on this goroutine, so writes to w are
+	// never concurrent
+	city, err := citymap.Builder{}.BuildContext(r.Context(), cwd, merged, func(phase string, done, total int) {
+		send("progress", map[string]any{"phase": phase, "done": done, "total": total})
+	})
+	if err != nil {
+		// a client cancel arrives as a cancelled context; the stream is already
+		// gone, so there is nothing left to send
+		if r.Context().Err() == nil {
+			send("error", map[string]string{"message": err.Error()})
+		}
+		return
+	}
+	assignFileIDs(merged, city)
+	merged.Stats = model.ComputeStats(merged, repoFileCount(city), "")
+	s.storeProjectResult(key, sig, merged, city)
+	send("done", struct {
+		Trace *model.Trace   `json:"trace"`
+		City  *model.CityMap `json:"city"`
+	}{Trace: merged, City: city})
 }
 
 func projectKey(cwd string) string {

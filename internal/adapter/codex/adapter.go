@@ -269,6 +269,8 @@ func (a Adapter) Parse(path string) (*model.Trace, error) {
 			}
 		}
 	})
+	// one weak-path existence memo shared across the whole parse (cwd is fixed)
+	statCache := map[string]bool{}
 	for _, id := range callOrder {
 		call := calls[id]
 		result := results[id]
@@ -278,7 +280,7 @@ func (a Adapter) Parse(path string) (*model.Trace, error) {
 				result.IsError = !*patchResult.Success
 			}
 		}
-		trace.Events = append(trace.Events, adapter.BuildEvent(trace, call, result))
+		trace.Events = append(trace.Events, adapter.BuildEventCached(trace, call, result, statCache))
 	}
 	for i := range trace.Events {
 		trace.Events[i].Seq = i

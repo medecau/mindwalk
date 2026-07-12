@@ -20,7 +20,7 @@ Sessions can also be viewed per project. A project is the set of sessions that s
 - `internal/model` owns the trace and citymap data contracts.
 - `internal/aggregate` merges several single-session traces into one chronological, source-tagged project trace. It knows nothing about rendering.
 - `internal/citymap` builds deterministic layouts from repository contents.
-- `internal/server` exposes local APIs and serves the web app: `/api/sessions` and `/api/projects` list each view, and `/api/{sessions,projects}/{key}/{snapshot,trace,citymap}` serve the data. `internal/server/static` holds the embedded frontend assets generated from `web/dist`.
+- `internal/server` exposes local APIs and serves the web app: `/api/sessions` and `/api/projects` list each view, and `/api/{sessions,projects}/{key}/{snapshot,trace,citymap}` serve the data. A project snapshot also reports a `build` status: when the project root is not a git repository, building its citymap means walking the whole tree, so the snapshot returns `consent-required` (unbuilt) and the client opts in via `/api/projects/{key}/build`, a Server-Sent-Events stream that reports scan/read progress and is cancelled by disconnecting. Merged project results are memoized by a signature of their member session files. `internal/server/static` holds the embedded frontend assets generated from `web/dist`.
 - `web` contains the React, Vite, and Three.js frontend.
 - `schema` mirrors the exported JSON contracts.
 

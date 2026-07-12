@@ -12,6 +12,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"sync"
 
 	"github.com/cosmtrek/mindwalk/internal/model"
 )
@@ -48,15 +49,39 @@ func SessionKey(harness, path string) string {
 	return fmt.Sprintf("%s-%x", harness, sum[:12])
 }
 
+// readerPool recycles the 64 KiB line reader across parses; on a corpus of
+// thousands of session files a fresh reader per file was a top allocation.
+var readerPool = sync.Pool{New: func() any { return bufio.NewReaderSize(nil, 64*1024) }}
+
+// ReadJSONLines calls visit once per non-empty line. The slice handed to visit
+// is reused across lines and is only valid for the duration of the call — visit
+// must copy anything it needs to keep. All current callers unmarshal within the
+// callback and retain nothing, so the reuse is safe and avoids a per-line copy.
 func ReadJSONLines(r io.Reader, visit func([]byte)) error {
-	reader := bufio.NewReaderSize(r, 64*1024)
+	br := readerPool.Get().(*bufio.Reader)
+	br.Reset(r)
+	defer func() {
+		br.Reset(nil)
+		readerPool.Put(br)
+	}()
+	var line []byte
 	for {
-		line, err := reader.ReadBytes('\n')
-		if len(line) > 0 {
-			line = bytes.TrimRight(line, "\r\n")
-			if len(line) > 0 {
-				visit(line)
+		line = line[:0]
+		// ReadSlice returns a view into the reader's buffer with no allocation;
+		// a line longer than the buffer arrives in fragments (ErrBufferFull),
+		// which we accumulate into the reused line buffer.
+		var err error
+		for {
+			frag, e := br.ReadSlice('\n')
+			line = append(line, frag...)
+			if e == bufio.ErrBufferFull {
+				continue
 			}
+			err = e
+			break
+		}
+		if trimmed := bytes.TrimRight(line, "\r\n"); len(trimmed) > 0 {
+			visit(trimmed)
 		}
 		if err != nil {
 			if err == io.EOF {
@@ -67,9 +92,19 @@ func ReadJSONLines(r io.Reader, visit func([]byte)) error {
 	}
 }
 
+// BuildEvent builds one event, statting each weak candidate path against the
+// filesystem every time. Kept for tests and one-off callers.
 func BuildEvent(trace *model.Trace, call ToolCall, result ToolResult) model.Event {
+	return BuildEventCached(trace, call, result, nil)
+}
+
+// BuildEventCached is BuildEvent with a caller-owned memo of weak-path existence
+// checks. A trace's cwd is fixed, and the same paths recur across its events, so
+// a single map shared across one parse turns the os.Stat filter (measured ~40%
+// of parse CPU) into a map lookup after the first check. Pass nil to disable.
+func BuildEventCached(trace *model.Trace, call ToolCall, result ToolResult, statCache map[string]bool) model.Event {
 	action := actionFor(call.Name, call.Input, result.Content)
-	targets, outside := targetsFor(trace.Session.Cwd, call.Name, call.Input, result.Content)
+	targets, outside := targetsFor(trace.Session.Cwd, call.Name, call.Input, result.Content, statCache)
 	if targets == nil {
 		targets = []model.Target{}
 	}
@@ -178,7 +213,7 @@ func actionFor(tool string, input map[string]any, result string) string {
 	}
 }
 
-func targetsFor(cwd, tool string, input map[string]any, result string) ([]model.Target, []model.OutsideTouch) {
+func targetsFor(cwd, tool string, input map[string]any, result string, statCache map[string]bool) ([]model.Target, []model.OutsideTouch) {
 	var targets []model.Target
 	var outside []model.OutsideTouch
 	add := func(path, touch string, weak bool, lines [][2]int, base string) {
@@ -190,7 +225,7 @@ func targetsFor(cwd, tool string, input map[string]any, result string) ([]model.
 			outside = append(outside, *out)
 			return
 		}
-		if weak && !repoPathExists(cwd, rel) {
+		if weak && !repoPathExists(cwd, rel, statCache) {
 			return
 		}
 		for i := range targets {
@@ -551,13 +586,22 @@ func isJSIdentifierByte(b byte) bool {
 	return b == '_' || b == '$' || b >= 'a' && b <= 'z' || b >= 'A' && b <= 'Z' || b >= '0' && b <= '9'
 }
 
-func repoPathExists(cwd, rel string) bool {
+func repoPathExists(cwd, rel string, statCache map[string]bool) bool {
 	if cwd == "" || rel == "" {
 		return false
 	}
+	if statCache != nil {
+		if exists, ok := statCache[rel]; ok {
+			return exists
+		}
+	}
 	abs := filepath.Join(cwd, filepath.FromSlash(rel))
 	_, err := os.Stat(abs)
-	return err == nil
+	exists := err == nil
+	if statCache != nil {
+		statCache[rel] = exists
+	}
+	return exists
 }
 
 func readLines(input map[string]any) [][2]int {

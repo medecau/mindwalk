@@ -30,6 +30,14 @@ export interface SessionMeta {
   eventCount: number;
 }
 
+/** the state of a project's citymap in a snapshot: "ready" when built,
+ * "consent-required" when the root is not a git repository and building it means
+ * walking the whole tree — which the client only does after the user opts in */
+export interface ProjectBuild {
+  status: "ready" | "consent-required";
+  root?: string;
+}
+
 /** one repository, grouping the sessions that ran in its working directory */
 export interface ProjectMeta {
   key: string;

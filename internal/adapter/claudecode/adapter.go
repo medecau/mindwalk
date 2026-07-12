@@ -143,6 +143,8 @@ func (a Adapter) Parse(path string) (*model.Trace, error) {
 	recognized := false
 	pending := map[string]adapter.ToolCall{}
 	pendingOrder := []string{}
+	// one weak-path existence memo shared across the whole parse (cwd is fixed)
+	statCache := map[string]bool{}
 	err = adapter.ReadJSONLines(f, func(data []byte) {
 		var line rawLine
 		if json.Unmarshal(data, &line) != nil {
@@ -195,14 +197,14 @@ func (a Adapter) Parse(path string) (*model.Trace, error) {
 					continue
 				}
 				delete(pending, item.ToolUseID)
-				event := buildEvent(trace, call, item)
+				event := buildEvent(trace, call, item, statCache)
 				trace.Events = append(trace.Events, event)
 			}
 		}
 	})
 	for _, id := range pendingOrder {
 		if call, ok := pending[id]; ok {
-			trace.Events = append(trace.Events, buildEvent(trace, call, contentItem{}))
+			trace.Events = append(trace.Events, buildEvent(trace, call, contentItem{}, statCache))
 		}
 	}
 	sort.Slice(trace.Events, func(i, j int) bool {
@@ -329,9 +331,9 @@ func isClaudeLine(line rawLine) bool {
 	}
 }
 
-func buildEvent(trace *model.Trace, call adapter.ToolCall, result contentItem) model.Event {
-	return adapter.BuildEvent(trace, call, adapter.ToolResult{
+func buildEvent(trace *model.Trace, call adapter.ToolCall, result contentItem, statCache map[string]bool) model.Event {
+	return adapter.BuildEventCached(trace, call, adapter.ToolResult{
 		Content: adapter.ContentToString(result.Content),
 		IsError: result.IsError,
-	})
+	}, statCache)
 }
