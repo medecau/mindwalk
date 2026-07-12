@@ -30,6 +30,30 @@ export interface SessionMeta {
   eventCount: number;
 }
 
+/** one repository, grouping the sessions that ran in its working directory */
+export interface ProjectMeta {
+  key: string;
+  path: string;
+  name: string;
+  sessionCount: number;
+  eventCount: number;
+  startedAt?: string;
+  endedAt?: string;
+  harnesses: string[];
+}
+
+/** a session that contributed events to a merged project trace; the client
+ * assigns its color from its index in Trace.sources */
+export interface TraceSource {
+  key: string;
+  id: string;
+  title?: string;
+  harness: string;
+  startedAt?: string;
+  endedAt?: string;
+  eventCount: number;
+}
+
 export interface Rect {
   x: number;
   z: number;
@@ -86,6 +110,8 @@ export interface Trace {
     eventCount: number;
     path?: string;
   };
+  /** present only for merged project traces; each event's src indexes into it */
+  sources?: TraceSource[];
   events: TraceEvent[];
   marks: Mark[];
   stats: Stats;
@@ -94,6 +120,8 @@ export interface Trace {
 export interface TraceEvent {
   seq: number;
   ts?: string;
+  /** index into Trace.sources; 0/omitted for a single-session trace */
+  src?: number;
   tool: string;
   action: Action;
   targets: Target[];

@@ -1,18 +1,25 @@
 import { Eye, EyeOff, FolderOpen, PanelLeftClose, RefreshCw, Search } from "lucide-react";
 import { memo, useMemo, useState } from "react";
 import { sessionVisible } from "../state/filters";
+import type { RailMode } from "../state/store";
+import { sessionColorHex } from "../scene/sessionColors";
 import { LogoMark } from "./LogoMark";
 import { toggleRailShortcut } from "./shortcuts";
-import type { SessionMeta } from "../types";
+import type { ProjectMeta, SessionMeta } from "../types";
 
 interface SessionRailProps {
   sessions: SessionMeta[];
+  projects: ProjectMeta[];
+  mode: RailMode;
   activeKey?: string;
+  activeProjectKey?: string;
   loading: boolean;
   hideEmpty: boolean;
   harnessFilter?: string;
   collapsed: boolean;
   onSelect: (key: string) => void;
+  onSelectProject: (key: string) => void;
+  onModeChange: (mode: RailMode) => void;
   onRefresh: () => void;
   onHideEmptyChange: (hide: boolean) => void;
   onHarnessFilterChange: (harness?: string) => void;
@@ -24,16 +31,24 @@ interface SessionRailProps {
   locked?: boolean;
 }
 
+// how many session-color swatches a project row previews before it stops
+const MAX_SWATCHES = 8;
+
 // memo: the app re-renders every playback tick; the rail's props only change
 // on scans, session switches, and filter changes
 export const SessionRail = memo(function SessionRail({
   sessions,
+  projects,
+  mode,
   activeKey,
+  activeProjectKey,
   loading,
   hideEmpty,
   harnessFilter,
   collapsed,
   onSelect,
+  onSelectProject,
+  onModeChange,
   onRefresh,
   onHideEmptyChange,
   onHarnessFilterChange,
@@ -58,6 +73,13 @@ export const SessionRail = memo(function SessionRail({
         .includes(q);
     });
   }, [sessions, query, hideEmpty, effectiveHarness, activeKey]);
+  const shownProjects = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    if (!q) return projects;
+    return projects.filter((project) => `${project.name} ${project.path}`.toLowerCase().includes(q));
+  }, [projects, query]);
+
+  const isProjects = mode === "projects";
 
   return (
     <aside className={collapsed ? "session-rail collapsed" : "session-rail"}>
@@ -69,7 +91,7 @@ export const SessionRail = memo(function SessionRail({
           </span>
         </h1>
         <div className="rail-head-actions">
-          <button className="icon-btn" onClick={onRefresh} title="Rescan sessions" aria-label="Rescan sessions">
+          <button className="icon-btn" onClick={onRefresh} title="Rescan" aria-label="Rescan">
             <RefreshCw size={15} />
           </button>
           <button
@@ -82,18 +104,36 @@ export const SessionRail = memo(function SessionRail({
           </button>
         </div>
       </div>
+      <div className="rail-mode" role="tablist" aria-label="Sidebar mode">
+        <button
+          role="tab"
+          aria-selected={!isProjects}
+          className={isProjects ? "" : "active"}
+          onClick={() => onModeChange("sessions")}
+        >
+          Sessions
+        </button>
+        <button
+          role="tab"
+          aria-selected={isProjects}
+          className={isProjects ? "active" : ""}
+          onClick={() => onModeChange("projects")}
+        >
+          Projects
+        </button>
+      </div>
       <div className="rail-controls">
         <label className="rail-filter">
           <Search size={14} aria-hidden />
           <input
             type="search"
-            placeholder="Filter sessions"
+            placeholder={isProjects ? "Filter projects" : "Filter sessions"}
             value={query}
             onChange={(e) => setQuery(e.currentTarget.value)}
-            aria-label="Filter sessions"
+            aria-label={isProjects ? "Filter projects" : "Filter sessions"}
           />
         </label>
-        {harnesses.length > 1 || emptyCount > 0 ? (
+        {!isProjects && (harnesses.length > 1 || emptyCount > 0) ? (
           <div className="rail-chips" role="group" aria-label="Session filters">
             {harnesses.length > 1 ? (
               <>
@@ -119,12 +159,8 @@ export const SessionRail = memo(function SessionRail({
                 className={hideEmpty ? "eye-toggle" : "eye-toggle showing"}
                 onClick={() => onHideEmptyChange(!hideEmpty)}
                 aria-pressed={!hideEmpty}
-                title={
-                  hideEmpty ? `Show ${emptyCount} empty sessions` : `Hide ${emptyCount} empty sessions`
-                }
-                aria-label={
-                  hideEmpty ? `Show ${emptyCount} empty sessions` : `Hide ${emptyCount} empty sessions`
-                }
+                title={hideEmpty ? `Show ${emptyCount} empty sessions` : `Hide ${emptyCount} empty sessions`}
+                aria-label={hideEmpty ? `Show ${emptyCount} empty sessions` : `Hide ${emptyCount} empty sessions`}
               >
                 {hideEmpty ? <EyeOff size={13} aria-hidden /> : <Eye size={13} aria-hidden />}
               </button>
@@ -133,26 +169,55 @@ export const SessionRail = memo(function SessionRail({
         ) : null}
       </div>
       <div className="session-list" aria-busy={loading}>
-        {shown.map((session) => (
-          <button
-            key={session.key}
-            className={session.key === activeKey ? "session-row active" : "session-row"}
-            onClick={() => onSelect(session.key)}
-            disabled={locked}
-          >
-            <span className="session-title">{session.title || session.id}</span>
-            <span className="session-meta">
-              <span className={`harness-dot ${harnessClass(session.harness)}`} aria-hidden />
-              <span className="session-meta-text">
-                {harnessLabel(session.harness)} · {session.eventCount}{" "}
-                {session.eventCount === 1 ? "call" : "calls"}
-                {session.gitBranch ? ` · ${session.gitBranch}` : ""}
-                {session.endedAt ? ` · ${shortDate(session.endedAt)}` : ""}
-              </span>
-            </span>
-          </button>
-        ))}
-        {shown.length === 0 ? (
+        {isProjects
+          ? shownProjects.map((project) => (
+              <button
+                key={project.key}
+                className={project.key === activeProjectKey ? "session-row active" : "session-row"}
+                onClick={() => onSelectProject(project.key)}
+                title={project.path}
+                disabled={locked}
+              >
+                <span className="session-title">{project.name}</span>
+                <span className="session-meta">
+                  <span className="project-swatches" aria-hidden>
+                    {Array.from({ length: Math.min(project.sessionCount, MAX_SWATCHES) }).map((_, i) => (
+                      <span key={i} className="session-swatch" style={{ background: sessionColorHex(i) }} />
+                    ))}
+                  </span>
+                  <span className="session-meta-text">
+                    {project.sessionCount} session{project.sessionCount === 1 ? "" : "s"} · {project.eventCount}{" "}
+                    {project.eventCount === 1 ? "call" : "calls"}
+                    {project.endedAt ? ` · ${shortDate(project.endedAt)}` : ""}
+                  </span>
+                </span>
+              </button>
+            ))
+          : shown.map((session) => (
+              <button
+                key={session.key}
+                className={session.key === activeKey ? "session-row active" : "session-row"}
+                onClick={() => onSelect(session.key)}
+                disabled={locked}
+              >
+                <span className="session-title">{session.title || session.id}</span>
+                <span className="session-meta">
+                  <span className={`harness-dot ${harnessClass(session.harness)}`} aria-hidden />
+                  <span className="session-meta-text">
+                    {harnessLabel(session.harness)} · {session.eventCount}{" "}
+                    {session.eventCount === 1 ? "call" : "calls"}
+                    {session.gitBranch ? ` · ${session.gitBranch}` : ""}
+                    {session.endedAt ? ` · ${shortDate(session.endedAt)}` : ""}
+                  </span>
+                </span>
+              </button>
+            ))}
+        {isProjects && shownProjects.length === 0 ? (
+          <p className="muted" style={{ padding: "10px 8px" }}>
+            {loading && projects.length === 0 ? "Scanning projects…" : "No matching projects."}
+          </p>
+        ) : null}
+        {!isProjects && shown.length === 0 ? (
           <p className="muted" style={{ padding: "10px 8px" }}>
             {loading && sessions.length === 0 ? "Scanning sessions…" : "No matching sessions."}
           </p>
@@ -186,9 +251,13 @@ export const SessionRail = memo(function SessionRail({
         </div>
       </form>
       <div className="rail-foot">
-        {shown.length === sessions.length
-          ? `${sessions.length} session${sessions.length === 1 ? "" : "s"}`
-          : `${shown.length} of ${sessions.length} sessions`}
+        {isProjects
+          ? shownProjects.length === projects.length
+            ? `${projects.length} project${projects.length === 1 ? "" : "s"}`
+            : `${shownProjects.length} of ${projects.length} projects`
+          : shown.length === sessions.length
+            ? `${sessions.length} session${sessions.length === 1 ? "" : "s"}`
+            : `${shown.length} of ${sessions.length} sessions`}
       </div>
     </aside>
   );

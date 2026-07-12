@@ -6,6 +6,11 @@
   "required": ["version", "session", "events", "marks", "stats"],
   "properties": {
     "version": { "const": 1 },
+    "sources": {
+      "type": "array",
+      "description": "Roster of the sessions merged into a project trace; absent for a single-session trace. Each event's src indexes into this array.",
+      "items": { "$ref": "#/$defs/source" }
+    },
     "session": {
       "type": "object",
       "required": ["id", "harness", "eventCount"],
@@ -31,6 +36,11 @@
         "properties": {
           "seq": { "type": "integer", "minimum": 0 },
           "ts": { "type": "string" },
+          "src": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Index into the trace's sources roster; omitted (0) for single-session traces"
+          },
           "tool": { "type": "string" },
           "action": { "enum": ["search", "read", "edit", "exec", "verify", "other"] },
           "targets": {
@@ -131,6 +141,20 @@
   },
   "additionalProperties": false,
   "$defs": {
+    "source": {
+      "type": "object",
+      "required": ["key", "id", "harness", "eventCount"],
+      "properties": {
+        "key": { "type": "string" },
+        "id": { "type": "string" },
+        "title": { "type": "string" },
+        "harness": { "type": "string" },
+        "startedAt": { "type": "string" },
+        "endedAt": { "type": "string" },
+        "eventCount": { "type": "integer", "minimum": 0 }
+      },
+      "additionalProperties": false
+    },
     "actionCounts": {
       "type": "object",
       "required": ["search", "read", "edit", "exec", "verify", "other"],

@@ -26,6 +26,9 @@ interface CitySceneProps {
   // static map mode: with no session to drive attention height, raise terrain
   // columns by file size (lines of code) instead of leaving the plain flat
   locHeights?: boolean;
+  // one hex color per source session; present only in a merged project view,
+  // where the walker (trail + firefly) is tinted by whose action it plays
+  sourceColors?: string[];
 }
 
 // Attention terrain: the map is a flat dark plain (fog of war); height is
@@ -91,7 +94,15 @@ interface TerrainSlot {
   color: THREE.Color;
 }
 
-export function CityScene({ city, playback, selectedPath, onSelect, onCanvasReady, locHeights }: CitySceneProps) {
+export function CityScene({
+  city,
+  playback,
+  selectedPath,
+  onSelect,
+  onCanvasReady,
+  locHeights,
+  sourceColors
+}: CitySceneProps) {
   const hostRef = useRef<HTMLDivElement | null>(null);
   const tileMeshRef = useRef<THREE.InstancedMesh | null>(null);
   const terrainMeshRef = useRef<THREE.InstancedMesh | null>(null);
@@ -115,6 +126,12 @@ export function CityScene({ city, playback, selectedPath, onSelect, onCanvasRead
   // camera fit deferred while the viewport reports no size (hidden pane,
   // background tab); resize retries it instead of leaving the camera at NaN
   const fitPendingRef = useRef<(() => boolean) | null>(null);
+
+  // per-source THREE colors for the walker; undefined outside a project view
+  const sessionColors = useMemo(
+    () => (sourceColors ? sourceColors.map((hex) => new THREE.Color(hex)) : undefined),
+    [sourceColors]
+  );
 
   const bounds = useMemo(() => {
     if (!city || city.files.length === 0) return { cx: 0, cz: 0, size: 120, halfW: 60, halfD: 60 };
@@ -568,9 +585,13 @@ export function CityScene({ city, playback, selectedPath, onSelect, onCanvasRead
 
     // playback resolves fileId with the same path key the citymap uses, so a
     // target still missing one has no tile to land on
-    const targetFiles = playback.recentTargets
-      .map((target) => (target.fileId !== undefined ? city.files[target.fileId] : undefined))
-      .filter((file): file is CityFile => Boolean(file));
+    const recent = playback.recentTargets
+      .map((target) => ({
+        file: target.fileId !== undefined ? city.files[target.fileId] : undefined,
+        source: target.source
+      }))
+      .filter((entry): entry is { file: CityFile; source: number } => Boolean(entry.file));
+    const targetFiles = recent.map((entry) => entry.file);
 
     const peakFor = (file: CityFile): number => {
       const touch = playback.touchByFile.get(file.id);
@@ -580,24 +601,32 @@ export function CityScene({ city, playback, selectedPath, onSelect, onCanvasRead
 
     const firefly = fireflyRef.current;
     if (firefly) {
-      const head = targetFiles[targetFiles.length - 1];
+      const head = recent[recent.length - 1];
       if (head) {
-        const p = centerFor(head, bounds);
-        firefly.position.set(p.x, peakFor(head) + 1.6, p.z);
+        const p = centerFor(head.file, bounds);
+        firefly.position.set(p.x, peakFor(head.file) + 1.6, p.z);
+        // the head light takes the color of the session acting now
+        if (sessionColors) {
+          (firefly.material as THREE.SpriteMaterial).color = sessionColors[head.source] ?? sessionColors[0] ?? EMBER;
+        }
         firefly.visible = true;
       } else {
         firefly.visible = false;
       }
     }
 
+    const trailColors = sessionColors
+      ? recent.map((entry) => sessionColors[entry.source] ?? sessionColors[0] ?? EMBER)
+      : undefined;
     trail.update(
       targetFiles.map((file) => {
         const p = centerFor(file, bounds);
         p.y = peakFor(file) + 0.4;
         return p;
-      })
+      }),
+      trailColors
     );
-  }, [city, playback, bounds]);
+  }, [city, playback, bounds, sessionColors]);
 
   return <div className="city-scene" ref={hostRef} aria-label="Attention terrain" />;
 }

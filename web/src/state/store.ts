@@ -1,12 +1,16 @@
 import { create } from "zustand";
-import type { CityMap, SessionMeta, Trace } from "../types";
+import type { CityMap, ProjectMeta, SessionMeta, Trace } from "../types";
 import { loadFilters, saveFilters } from "./filters";
 
 export type SceneView = "tree" | "terrain";
+export type RailMode = "sessions" | "projects";
 
 interface AppState {
   sessions: SessionMeta[];
+  projects: ProjectMeta[];
+  railMode: RailMode;
   activeSessionKey?: string;
+  activeProjectKey?: string;
   trace?: Trace;
   city?: CityMap;
   currentSeq: number;
@@ -20,7 +24,10 @@ interface AppState {
   mapOnly: boolean;
   setView: (view: SceneView) => void;
   setSessions: (sessions: SessionMeta[]) => void;
+  setProjects: (projects: ProjectMeta[]) => void;
+  setRailMode: (mode: RailMode) => void;
   setActiveSession: (key?: string) => void;
+  setActiveProject: (key?: string) => void;
   setData: (trace: Trace, city: CityMap) => void;
   setCityOnly: (city: CityMap) => void;
   setCurrentSeq: (seq: number) => void;
@@ -35,6 +42,7 @@ interface AppState {
 const initialFilters = loadFilters();
 
 const RAIL_COLLAPSED_KEY = "mindwalk.railCollapsed";
+const RAIL_MODE_KEY = "mindwalk.railMode";
 
 function loadRailCollapsed(): boolean {
   try {
@@ -44,8 +52,18 @@ function loadRailCollapsed(): boolean {
   }
 }
 
+function loadRailMode(): RailMode {
+  try {
+    return localStorage.getItem(RAIL_MODE_KEY) === "projects" ? "projects" : "sessions";
+  } catch {
+    return "sessions";
+  }
+}
+
 export const useAppStore = create<AppState>((set, get) => ({
   sessions: [],
+  projects: [],
+  railMode: loadRailMode(),
   currentSeq: 0,
   view: "tree",
   loading: false,
@@ -55,8 +73,33 @@ export const useAppStore = create<AppState>((set, get) => ({
   mapOnly: false,
   setView: (view) => set({ view }),
   setSessions: (sessions) => set({ sessions }),
+  setProjects: (projects) => set({ projects }),
+  setRailMode: (railMode) => {
+    set({ railMode });
+    try {
+      localStorage.setItem(RAIL_MODE_KEY, railMode);
+    } catch {
+      // storage unavailable: mode resets on next load
+    }
+  },
   setActiveSession: (activeSessionKey) =>
-    set({ activeSessionKey, trace: undefined, city: undefined, currentSeq: 0, selectedPath: undefined }),
+    set({
+      activeSessionKey,
+      activeProjectKey: undefined,
+      trace: undefined,
+      city: undefined,
+      currentSeq: 0,
+      selectedPath: undefined
+    }),
+  setActiveProject: (activeProjectKey) =>
+    set({
+      activeProjectKey,
+      activeSessionKey: undefined,
+      trace: undefined,
+      city: undefined,
+      currentSeq: 0,
+      selectedPath: undefined
+    }),
   setData: (trace, city) => set({ trace, city, currentSeq: Math.max(0, trace.events.length - 1) }),
   // static full-repo map: render the city with no session/trace attached
   setCityOnly: (city) => set({ city, trace: undefined, currentSeq: 0, selectedPath: undefined, mapOnly: true }),

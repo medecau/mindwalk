@@ -1,6 +1,7 @@
 import { Loader, Pause, Play, RotateCcw, StepBack, StepForward, Video } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { Action, Mark, Trace, TraceEvent } from "../types";
+import { sessionColorHex } from "../scene/sessionColors";
+import type { Action, Mark, Trace, TraceEvent, TraceSource } from "../types";
 
 interface TimelineProps {
   trace?: Trace;
@@ -47,6 +48,9 @@ export function Timeline({ trace, currentSeq, onChange, onExport, exporting = fa
   const max = Math.max(0, total - 1);
   const seq = Math.min(currentSeq, max);
   const event = trace?.events[seq];
+  // a merged project trace carries a roster of the sessions it interleaves
+  const sources = trace?.sources;
+  const multiSession = (sources?.length ?? 0) > 1;
 
   useEffect(() => {
     setPlaying(false);
@@ -206,6 +210,34 @@ export function Timeline({ trace, currentSeq, onChange, onExport, exporting = fa
 
   const peak = useMemo(() => buckets.reduce((acc, b) => Math.max(acc, b.count), 1), [buckets]);
 
+  // one strip segment per bucket, colored by the session that dominated that
+  // slice of the timeline — a merged project's interleaving read at a glance
+  const sessionBuckets = useMemo<number[]>(() => {
+    if (!multiSession || !trace || total === 0) return [];
+    const n = Math.min(BUCKETS, total);
+    const out: number[] = [];
+    for (let b = 0; b < n; b++) {
+      const from = Math.floor((b * total) / n);
+      const to = Math.floor(((b + 1) * total) / n);
+      const bySource = new Map<number, number>();
+      for (let i = from; i < to; i++) {
+        const src = trace.events[i].src ?? 0;
+        bySource.set(src, (bySource.get(src) ?? 0) + 1);
+      }
+      let dominant = 0;
+      let best = -1;
+      for (const [src, count] of bySource) {
+        // ties resolve to the lower index so the ribbon is deterministic
+        if (count > best || (count === best && src < dominant)) {
+          best = count;
+          dominant = src;
+        }
+      }
+      out.push(dominant);
+    }
+    return out;
+  }, [multiSession, trace, total]);
+
   const markGroups = useMemo<MarkGroup[]>(() => {
     if (!trace) return [];
     const groups = new Map<string, MarkGroup>();
@@ -309,6 +341,13 @@ export function Timeline({ trace, currentSeq, onChange, onExport, exporting = fa
               />
             ))}
           </div>
+          {multiSession && sessionBuckets.length > 0 ? (
+            <div className="strip-sessions" aria-hidden>
+              {sessionBuckets.map((src, i) => (
+                <span key={i} className="strip-session" style={{ background: sessionColorHex(src) }} />
+              ))}
+            </div>
+          ) : null}
           {total > 0 ? (
             <div className="strip-playhead" style={{ left: `${(seq / Math.max(max, 1)) * 100}%` }} aria-hidden />
           ) : null}
@@ -335,6 +374,12 @@ export function Timeline({ trace, currentSeq, onChange, onExport, exporting = fa
         <div className="readout-now">
           {event ? (
             <>
+              {multiSession ? (
+                <span className="readout-session" title={sourceTitle(sources, event.src ?? 0)}>
+                  <span className="session-swatch" style={{ background: sessionColorHex(event.src ?? 0) }} />
+                  {sourceLabel(sources, event.src ?? 0)}
+                </span>
+              ) : null}
               <span className={`action-dot ${event.action}`} />
               <span className="readout-tool">{event.tool}</span>
               {event.isError ? <span className="err">error</span> : null}
@@ -356,20 +401,31 @@ export function Timeline({ trace, currentSeq, onChange, onExport, exporting = fa
             ))}
           </span>
           <span className="legend-sep" />
-          <span className="legend-group">
-            <span className="legend-item">
-              <span className="legend-glyph compaction" />
-              compaction
+          {multiSession && sources ? (
+            <span className="legend-group">
+              {sources.map((source, i) => (
+                <span key={source.key} className="legend-item" title={sourceTitle(sources, i)}>
+                  <span className="session-swatch" style={{ background: sessionColorHex(i) }} />
+                  {sourceLabel(sources, i)}
+                </span>
+              ))}
             </span>
-            <span className="legend-item">
-              <span className="legend-glyph subagent" />
-              subagent
+          ) : (
+            <span className="legend-group">
+              <span className="legend-item">
+                <span className="legend-glyph compaction" />
+                compaction
+              </span>
+              <span className="legend-item">
+                <span className="legend-glyph subagent" />
+                subagent
+              </span>
+              <span className="legend-item">
+                <span className="legend-glyph user-message" />
+                user turn
+              </span>
             </span>
-            <span className="legend-item">
-              <span className="legend-glyph user-message" />
-              user turn
-            </span>
-          </span>
+          )}
         </div>
       </div>
     </footer>
@@ -380,4 +436,14 @@ function clock(iso: string): string {
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return "";
   return [d.getHours(), d.getMinutes(), d.getSeconds()].map((n) => String(n).padStart(2, "0")).join(":");
+}
+
+function sourceTitle(sources: TraceSource[] | undefined, index: number): string {
+  const source = sources?.[index];
+  return source ? source.title || source.id : "";
+}
+
+function sourceLabel(sources: TraceSource[] | undefined, index: number): string {
+  const full = sourceTitle(sources, index);
+  return full.length > 16 ? `${full.slice(0, 15)}…` : full;
 }

@@ -6,12 +6,16 @@ export const touchRank: Record<Touch, number> = {
   edit: 3
 };
 
+/** a recent fixation carrying the session that produced it, so the walker can
+ * be colored per source in a merged project view */
+export type RecentTarget = Target & { source: number };
+
 export interface FilePlayback {
   touchByFile: Map<number, Touch>;
   touchByPath: Map<string, Touch>;
   visitsByFile: Map<number, number>;
   historyByPath: Map<string, TraceEvent[]>;
-  recentTargets: Target[];
+  recentTargets: RecentTarget[];
 }
 
 const RECENT_WINDOW = 12;
@@ -29,7 +33,7 @@ export class PlaybackEngine {
   private readonly touchByPath = new Map<string, Touch>();
   private readonly visitsByFile = new Map<number, number>();
   private readonly historyByPath = new Map<string, TraceEvent[]>();
-  private readonly recentTargets: Target[] = [];
+  private readonly recentTargets: RecentTarget[] = [];
 
   constructor(trace: Trace | undefined, city: CityMap | undefined) {
     this.events = trace?.events ?? [];
@@ -64,6 +68,7 @@ export class PlaybackEngine {
   }
 
   private apply(event: TraceEvent) {
+    const source = event.src ?? 0;
     for (const target of event.targets) {
       const prev = this.touchByPath.get(target.path);
       if (!prev || touchRank[target.touch] > touchRank[prev]) {
@@ -84,7 +89,7 @@ export class PlaybackEngine {
     if (event.targets.length > 0) {
       // the trail follows the strongest signal: skip weak (heuristic) targets
       const primary = event.targets.find((target) => !target.weak) ?? event.targets[0];
-      this.recentTargets.push({ ...primary, fileId: primary.fileId ?? this.idByPath.get(primary.path) });
+      this.recentTargets.push({ ...primary, fileId: primary.fileId ?? this.idByPath.get(primary.path), source });
       if (this.recentTargets.length > RECENT_WINDOW) this.recentTargets.shift();
     }
   }

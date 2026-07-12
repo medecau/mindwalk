@@ -47,11 +47,28 @@ type LayoutMeta struct {
 }
 
 type Trace struct {
-	Version int          `json:"version"`
-	Session TraceSession `json:"session"`
-	Events  []Event      `json:"events"`
-	Marks   []Mark       `json:"marks"`
-	Stats   Stats        `json:"stats"`
+	Version int           `json:"version"`
+	Session TraceSession  `json:"session"`
+	Sources []TraceSource `json:"sources,omitempty"`
+	Events  []Event       `json:"events"`
+	Marks   []Mark        `json:"marks"`
+	Stats   Stats         `json:"stats"`
+}
+
+// TraceSource identifies one session that contributed events to a merged
+// project trace. Each Event carries a Source index into Trace.Sources; a plain
+// single-session trace omits Sources entirely and leaves Event.Source at 0.
+// Color is deliberately absent: which hue distinguishes a source is a rendering
+// concern the web client derives from the source's index, keeping this data
+// contract free of presentation.
+type TraceSource struct {
+	Key        string `json:"key"`
+	ID         string `json:"id"`
+	Title      string `json:"title,omitempty"`
+	Harness    string `json:"harness"`
+	StartedAt  string `json:"startedAt,omitempty"`
+	EndedAt    string `json:"endedAt,omitempty"`
+	EventCount int    `json:"eventCount"`
 }
 
 type TraceSession struct {
@@ -70,6 +87,7 @@ type TraceSession struct {
 type Event struct {
 	Seq         int            `json:"seq"`
 	Timestamp   string         `json:"ts,omitempty"`
+	Source      int            `json:"src,omitempty"`
 	Tool        string         `json:"tool"`
 	Action      string         `json:"action"`
 	Targets     []Target       `json:"targets"`
@@ -161,4 +179,18 @@ type SessionMeta struct {
 	EndedAt    string `json:"endedAt,omitempty"`
 	EventCount int    `json:"eventCount"`
 	Auxiliary  bool   `json:"-"`
+}
+
+// ProjectMeta groups the sessions that ran in one repository, keyed by their
+// shared working directory. It is an index record for the projects sidebar, not
+// part of the exported trace/citymap contract.
+type ProjectMeta struct {
+	Key          string   `json:"key"`
+	Path         string   `json:"path"`
+	Name         string   `json:"name"`
+	SessionCount int      `json:"sessionCount"`
+	EventCount   int      `json:"eventCount"`
+	StartedAt    string   `json:"startedAt,omitempty"`
+	EndedAt      string   `json:"endedAt,omitempty"`
+	Harnesses    []string `json:"harnesses"`
 }

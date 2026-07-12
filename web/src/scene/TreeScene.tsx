@@ -23,6 +23,9 @@ interface TreeSceneProps {
   selectedPath?: string;
   onSelect: (path?: string) => void;
   onCanvasReady?: (canvas: HTMLCanvasElement | null) => void;
+  // one hex color per source session; present only in a merged project view,
+  // where the walker (trail + firefly) is tinted by whose action it plays
+  sourceColors?: string[];
 }
 
 // Firefly tree: the repo is a radial tree — directories fork, files are
@@ -61,7 +64,14 @@ const LABEL_Y = 1.8;
 // the inspector docks on the right; selection pans the camera clear of it
 const INSPECTOR_RESERVED_PX = 348;
 
-export function TreeScene({ city, playback, selectedPath, onSelect, onCanvasReady }: TreeSceneProps) {
+export function TreeScene({
+  city,
+  playback,
+  selectedPath,
+  onSelect,
+  onCanvasReady,
+  sourceColors
+}: TreeSceneProps) {
   const hostRef = useRef<HTMLDivElement | null>(null);
   const leafMeshRef = useRef<THREE.InstancedMesh | null>(null);
   const ghostMeshRef = useRef<THREE.InstancedMesh | null>(null);
@@ -92,6 +102,11 @@ export function TreeScene({ city, playback, selectedPath, onSelect, onCanvasRead
   const fitPendingRef = useRef<(() => boolean) | null>(null);
 
   const layout = useMemo(() => (city && city.files.length > 0 ? computeTreeLayout(city.files) : null), [city]);
+  // per-source THREE colors for the walker; undefined outside a project view
+  const sessionColors = useMemo(
+    () => (sourceColors ? sourceColors.map((hex) => new THREE.Color(hex)) : undefined),
+    [sourceColors]
+  );
 
   useEffect(() => {
     const host = hostRef.current;
@@ -628,29 +643,44 @@ export function TreeScene({ city, playback, selectedPath, onSelect, onCanvasRead
 
     // playback resolves fileId with the same path key the citymap uses, so a
     // target still missing one has no leaf to land on
-    const targetFiles = playback.recentTargets
-      .map((target) => (target.fileId !== undefined ? city.files[target.fileId] : undefined))
-      .filter((file): file is CityFile => Boolean(file && layout.leaf.get(file.id)));
+    const recent = playback.recentTargets
+      .map((target) => ({
+        file: target.fileId !== undefined ? city.files[target.fileId] : undefined,
+        source: target.source
+      }))
+      .filter((entry): entry is { file: CityFile; source: number } =>
+        Boolean(entry.file && layout.leaf.get(entry.file.id))
+      );
+    const targetFiles = recent.map((entry) => entry.file);
 
     const firefly = fireflyRef.current;
     if (firefly) {
-      const head = targetFiles[targetFiles.length - 1];
+      const head = recent[recent.length - 1];
       if (head) {
-        const pos = layout.leaf.get(head.id)!;
+        const pos = layout.leaf.get(head.file.id)!;
         firefly.position.set(pos.x, LEAF_Y + 1.7, pos.z);
+        // the head light takes the color of the session acting now
+        if (sessionColors) {
+          (firefly.material as THREE.SpriteMaterial).color =
+            sessionColors[head.source] ?? sessionColors[0] ?? FIREFLY_HOT;
+        }
         firefly.visible = true;
       } else {
         firefly.visible = false;
       }
     }
 
+    const trailColors = sessionColors
+      ? recent.map((entry) => sessionColors[entry.source] ?? sessionColors[0] ?? FIREFLY_HOT)
+      : undefined;
     trail.update(
       targetFiles.map((file) => {
         const pos = layout.leaf.get(file.id)!;
         return new THREE.Vector3(pos.x, LEAF_Y + 0.3, pos.z);
-      })
+      }),
+      trailColors
     );
-  }, [city, layout, playback]);
+  }, [city, layout, playback, sessionColors]);
 
   return <div className="city-scene" ref={hostRef} aria-label="Firefly tree" />;
 }

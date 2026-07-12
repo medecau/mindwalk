@@ -11,21 +11,25 @@ The project has two primary artifacts:
 
 The UI combines those artifacts so users can see how a coding agent moved through a codebase over time. Keep this separation clear: source-specific parsing should not know about rendering, citymap generation should not depend on session playback, and the server should mainly connect data sources to the web client.
 
+Sessions can also be viewed per project. A project is the set of sessions that share a working directory; the server groups them and merges their traces into one chronological, source-tagged trace played against a single citymap. The merge orders every action by wall-clock timestamp so overlapping sessions interleave correctly, and tags each event with a source index. Color is left to the web client: it assigns a distinguishing hue per source index, so the data contract stays free of rendering.
+
 ## Architecture
 
 - `cmd/mindwalk` provides the CLI commands: serve a local UI, open a session, build a citymap, or export a trace.
 - `internal/adapter` converts supported agent session formats into the shared model. Claude Code and Codex each have an adapter; keep every source, current and future, behind its adapter boundary.
 - `internal/model` owns the trace and citymap data contracts.
+- `internal/aggregate` merges several single-session traces into one chronological, source-tagged project trace. It knows nothing about rendering.
 - `internal/citymap` builds deterministic layouts from repository contents.
-- `internal/server` exposes local APIs and serves the web app. `internal/server/static` holds the embedded frontend assets generated from `web/dist`.
+- `internal/server` exposes local APIs and serves the web app: `/api/sessions` and `/api/projects` list each view, and `/api/{sessions,projects}/{key}/{snapshot,trace,citymap}` serve the data. `internal/server/static` holds the embedded frontend assets generated from `web/dist`.
 - `web` contains the React, Vite, and Three.js frontend.
 - `schema` mirrors the exported JSON contracts.
 
 The normal flow is:
 
 ```text
-Agent session log (Claude Code or Codex) + repository path
+Agent session logs (Claude Code or Codex) + repository path
   -> Go adapters and citymap builder
+  -> per-session trace, or several merged into a project trace
   -> local Go server APIs
   -> React/Three.js playback UI
 ```

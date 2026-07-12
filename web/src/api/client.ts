@@ -1,4 +1,4 @@
-import type { CityMap, SessionMeta, Trace } from "../types";
+import type { CityMap, ProjectMeta, SessionMeta, Trace } from "../types";
 
 async function getJSON<T>(url: string): Promise<T> {
   const res = await fetch(url);
@@ -21,6 +21,14 @@ export function describeError(err: unknown, doing: string): string {
 
 export function listSessions(fresh = false): Promise<SessionMeta[]> {
   return getJSON<SessionMeta[]>(fresh ? "/api/sessions?fresh=1" : "/api/sessions");
+}
+
+export function listProjects(fresh = false): Promise<ProjectMeta[]> {
+  return getJSON<ProjectMeta[]>(fresh ? "/api/projects?fresh=1" : "/api/projects");
+}
+
+export function getProjectSnapshot(key: string): Promise<{ trace: Trace; city: CityMap }> {
+  return getJSON<{ trace: Trace; city: CityMap }>(`/api/projects/${encodeURIComponent(key)}/snapshot`);
 }
 
 export function getTrace(key: string): Promise<Trace> {

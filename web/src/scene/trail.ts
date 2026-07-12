@@ -39,8 +39,10 @@ export class TrailRenderer {
     this.object.frustumCulled = false;
   }
 
-  // points are the recent fixations, oldest first, y already at arc height
-  update(points: THREE.Vector3[]) {
+  // points are the recent fixations, oldest first, y already at arc height.
+  // colors, when given, is aligned to points and tints each arc by the session
+  // that produced its newer endpoint; omit it for a single ember-colored walker.
+  update(points: THREE.Vector3[], colors?: THREE.Color[]) {
     const arcs = Math.min(Math.max(points.length - 1, 0), MAX_ARCS);
     if (arcs === 0) {
       this.object.geometry.setDrawRange(0, 0);
@@ -60,7 +62,8 @@ export class TrailRenderer {
         this.curve.getPoint(s / SAMPLES, this.arcPoints[s]);
       }
       const recency = i / arcs;
-      this.color.copy(EMBER).multiplyScalar(0.05 + 0.95 * recency * recency);
+      const base = colors?.[start + i] ?? EMBER;
+      this.color.copy(base).multiplyScalar(0.05 + 0.95 * recency * recency);
       for (let s = 0; s < SAMPLES; s++) {
         const pa = this.arcPoints[s];
         const pb = this.arcPoints[s + 1];

@@ -1,6 +1,7 @@
 package server
 
 import (
+	"crypto/sha256"
 	"embed"
 	"encoding/json"
 	"errors"
@@ -22,6 +23,7 @@ import (
 	"github.com/cosmtrek/mindwalk/internal/adapter"
 	"github.com/cosmtrek/mindwalk/internal/adapter/claudecode"
 	"github.com/cosmtrek/mindwalk/internal/adapter/codex"
+	"github.com/cosmtrek/mindwalk/internal/aggregate"
 	"github.com/cosmtrek/mindwalk/internal/citymap"
 	"github.com/cosmtrek/mindwalk/internal/model"
 )
@@ -112,6 +114,8 @@ func (s *Server) Start(openBrowser bool) error {
 	mux.HandleFunc("/api/sessions", s.handleSessions)
 	mux.HandleFunc("/api/sessions/", s.handleSessionResource)
 	mux.HandleFunc("/api/repomap", s.handleRepoMap)
+	mux.HandleFunc("/api/projects", s.handleProjects)
+	mux.HandleFunc("/api/projects/", s.handleProjectResource)
 	mux.HandleFunc("/", s.handleStatic)
 	handler := loopbackOnly(mux)
 
@@ -292,6 +296,157 @@ func (s *Server) evictRepoMapsLocked() {
 		}
 		delete(s.repoMaps, oldestKey)
 	}
+}
+
+func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	sessions, err := s.listSessionsFresh(r.URL.Query().Get("fresh") == "1")
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, groupProjects(sessions))
+}
+
+func (s *Server) handleProjectResource(w http.ResponseWriter, r *http.Request) {
+	parts := strings.Split(strings.TrimPrefix(r.URL.Path, "/api/projects/"), "/")
+	if len(parts) != 2 {
+		http.NotFound(w, r)
+		return
+	}
+	key, resource := parts[0], parts[1]
+	trace, city, err := s.projectTraceAndMap(key)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusNotFound)
+		return
+	}
+	switch resource {
+	case "snapshot":
+		writeJSON(w, struct {
+			Trace *model.Trace   `json:"trace"`
+			City  *model.CityMap `json:"city"`
+		}{Trace: trace, City: city})
+	case "trace":
+		writeJSON(w, trace)
+	case "citymap":
+		writeJSON(w, city)
+	default:
+		http.NotFound(w, r)
+	}
+}
+
+// groupProjects buckets sessions by their working directory into projects,
+// newest activity first. Sessions with no cwd carry no repository to map, so
+// they never form a project (they remain reachable in sessions mode).
+func groupProjects(sessions []model.SessionMeta) []model.ProjectMeta {
+	type acc struct {
+		meta      model.ProjectMeta
+		harnesses map[string]bool
+	}
+	byKey := map[string]*acc{}
+	var order []string
+	for _, session := range sessions {
+		if session.Cwd == "" {
+			continue
+		}
+		path := filepath.Clean(session.Cwd)
+		key := projectKey(path)
+		a := byKey[key]
+		if a == nil {
+			a = &acc{
+				meta:      model.ProjectMeta{Key: key, Path: path, Name: projectName(path)},
+				harnesses: map[string]bool{},
+			}
+			byKey[key] = a
+			order = append(order, key)
+		}
+		a.meta.SessionCount++
+		a.meta.EventCount += session.EventCount
+		a.harnesses[session.Harness] = true
+		if session.StartedAt != "" && (a.meta.StartedAt == "" || session.StartedAt < a.meta.StartedAt) {
+			a.meta.StartedAt = session.StartedAt
+		}
+		if session.EndedAt > a.meta.EndedAt {
+			a.meta.EndedAt = session.EndedAt
+		}
+	}
+	projects := make([]model.ProjectMeta, 0, len(order))
+	for _, key := range order {
+		a := byKey[key]
+		harnesses := make([]string, 0, len(a.harnesses))
+		for h := range a.harnesses {
+			harnesses = append(harnesses, h)
+		}
+		sort.Strings(harnesses)
+		a.meta.Harnesses = harnesses
+		projects = append(projects, a.meta)
+	}
+	sort.SliceStable(projects, func(i, j int) bool {
+		if projects[i].EndedAt != projects[j].EndedAt {
+			return projects[i].EndedAt > projects[j].EndedAt
+		}
+		return projects[i].Key < projects[j].Key
+	})
+	return projects
+}
+
+// projectTraceAndMap merges every session in a project into one chronological
+// trace and builds a single citymap from the project's repository root. Member
+// traces come from the per-session cache; aggregate.Merge copies the events it
+// keeps, so assigning project file IDs here never mutates those cached traces.
+func (s *Server) projectTraceAndMap(key string) (*model.Trace, *model.CityMap, error) {
+	sessions, err := s.listSessions()
+	if err != nil {
+		return nil, nil, err
+	}
+	var inputs []aggregate.Input
+	cwd := ""
+	for _, meta := range sessions {
+		if meta.Cwd == "" || projectKey(filepath.Clean(meta.Cwd)) != key {
+			continue
+		}
+		if cwd == "" {
+			cwd = filepath.Clean(meta.Cwd)
+		}
+		trace, _, err := s.traceAndMap(meta.Key)
+		if err != nil || trace == nil {
+			continue
+		}
+		inputs = append(inputs, aggregate.Input{Meta: meta, Trace: trace})
+	}
+	if len(inputs) == 0 {
+		return nil, nil, errors.New("project not found")
+	}
+
+	merged := aggregate.Merge(inputs)
+	merged.Session.ID = key
+	merged.Session.Title = projectName(cwd)
+	merged.Session.Cwd = cwd
+
+	city, err := citymap.Builder{}.Build(cwd, merged)
+	if err != nil {
+		city = emptyCityMap(cwd)
+	} else {
+		assignFileIDs(merged, city)
+	}
+	merged.Stats = model.ComputeStats(merged, repoFileCount(city), "")
+	return merged, city, nil
+}
+
+func projectKey(cwd string) string {
+	sum := sha256.Sum256([]byte(filepath.Clean(cwd)))
+	return fmt.Sprintf("project-%x", sum[:12])
+}
+
+func projectName(path string) string {
+	base := filepath.Base(path)
+	if base == "." || base == string(filepath.Separator) || base == "" {
+		return path
+	}
+	return base
 }
 
 func (s *Server) listSessions() ([]model.SessionMeta, error) {

@@ -1,9 +1,17 @@
 import { PanelLeftOpen } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { describeError, getRepoMap, getSessionSnapshot, listSessions } from "./api/client";
+import {
+  describeError,
+  getProjectSnapshot,
+  getRepoMap,
+  getSessionSnapshot,
+  listProjects,
+  listSessions
+} from "./api/client";
 import { PlaybackEngine } from "./playback/reducer";
 import { downloadBlob, recordingSupported, recordPlayback } from "./playback/recorder";
 import { CityScene } from "./scene/CityScene";
+import { sessionColorHex } from "./scene/sessionColors";
 import { TreeScene } from "./scene/TreeScene";
 import { sessionVisible } from "./state/filters";
 import { useAppStore } from "./state/store";
@@ -17,7 +25,10 @@ import "./styles.css";
 export default function App() {
   const {
     sessions,
+    projects,
+    railMode,
     activeSessionKey,
+    activeProjectKey,
     trace,
     city,
     currentSeq,
@@ -31,7 +42,10 @@ export default function App() {
     mapOnly,
     setView,
     setSessions,
+    setProjects,
+    setRailMode,
     setActiveSession,
+    setActiveProject,
     setData,
     setCityOnly,
     setCurrentSeq,
@@ -44,6 +58,7 @@ export default function App() {
   } = useAppStore();
   const urlSessionConsumed = useRef(false);
   const scanGeneration = useRef(0);
+  const projectScanGeneration = useRef(0);
   const loadGeneration = useRef(0);
   const manualRefreshInFlight = useRef(false);
   const pendingLoads = useRef(0);
@@ -51,6 +66,8 @@ export default function App() {
   activeSessionKeyRef.current = activeSessionKey;
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const [exporting, setExporting] = useState(false);
+  const activeProjectKeyRef = useRef(activeProjectKey);
+  activeProjectKeyRef.current = activeProjectKey;
 
   // scenes hand up their live <canvas> so the video exporter can capture it;
   // stable identity keeps the scene mount effect from remounting on every render
@@ -86,13 +103,32 @@ export default function App() {
     }
   }, [beginLoading, endLoading, setData, setError, setSelectedPath]);
 
+  const loadProject = useCallback(async (key: string) => {
+    const generation = ++loadGeneration.current;
+    beginLoading();
+    setError(undefined);
+    try {
+      const { trace: nextTrace, city: nextCity } = await getProjectSnapshot(key);
+      if (generation !== loadGeneration.current || activeProjectKeyRef.current !== key) return;
+      setData(nextTrace, nextCity);
+      setSelectedPath(undefined);
+    } catch (err) {
+      if (generation === loadGeneration.current && activeProjectKeyRef.current === key) {
+        setError(describeError(err, "loading the project"));
+      }
+    } finally {
+      endLoading();
+    }
+  }, [beginLoading, endLoading, setData, setError, setSelectedPath]);
+
   const scan = useCallback(async (fresh: boolean) => {
     const generation = ++scanGeneration.current;
     beginLoading();
     setError(undefined);
     try {
       const data = await listSessions(fresh);
-      if (generation !== scanGeneration.current) return;
+      // a slow scan of a mode the user has since left must not apply its results
+      if (generation !== scanGeneration.current || useAppStore.getState().railMode !== "sessions") return;
       setSessions(data);
       let preferred: string | undefined;
       if (!urlSessionConsumed.current) {
@@ -153,16 +189,63 @@ export default function App() {
     window.open(url, "_blank", "noopener");
   }, []);
 
+  const scanProjects = useCallback(async (fresh: boolean) => {
+    const generation = ++projectScanGeneration.current;
+    beginLoading();
+    setError(undefined);
+    try {
+      const data = await listProjects(fresh);
+      // a slow scan of a mode the user has since left must not apply its results
+      if (generation !== projectScanGeneration.current || useAppStore.getState().railMode !== "projects") return;
+      setProjects(data);
+      // keep the current project if it survived the rescan; otherwise the newest
+      const currentActiveKey = activeProjectKeyRef.current;
+      const stillListed =
+        currentActiveKey !== undefined && data.some((project) => project.key === currentActiveKey);
+      const next = stillListed ? currentActiveKey : data[0]?.key;
+      if (next !== currentActiveKey) {
+        activeProjectKeyRef.current = next;
+        if (!next) loadGeneration.current++;
+        setActiveProject(next);
+      }
+      if (next) await loadProject(next);
+    } catch (err) {
+      if (generation === projectScanGeneration.current) {
+        setError(describeError(err, "scanning projects"));
+      }
+    } finally {
+      endLoading();
+    }
+  }, [beginLoading, endLoading, loadProject, setActiveProject, setError, setProjects]);
+
   const refresh = useCallback(() => {
     if (manualRefreshInFlight.current) return;
     manualRefreshInFlight.current = true;
-    void scan(true).finally(() => {
+    const run = useAppStore.getState().railMode === "projects" ? scanProjects(true) : scan(true);
+    void run.finally(() => {
       manualRefreshInFlight.current = false;
     });
-  }, [scan]);
+  }, [scan, scanProjects]);
+
+  const changeMode = useCallback((mode: "sessions" | "projects") => {
+    if (mode === useAppStore.getState().railMode) return;
+    setRailMode(mode);
+    // clear the outgoing mode's selection so the stage never keeps a stale
+    // scene under the new rail (e.g. switching into a mode with no items)
+    if (mode === "projects") {
+      activeProjectKeyRef.current = undefined;
+      setActiveProject(undefined);
+      void scanProjects(false);
+    } else {
+      activeSessionKeyRef.current = undefined;
+      setActiveSession(undefined);
+      void scan(false);
+    }
+  }, [scan, scanProjects, setRailMode, setActiveProject, setActiveSession]);
 
   const selectSession = useCallback((key: string) => {
     activeSessionKeyRef.current = key;
+    activeProjectKeyRef.current = undefined;
     setActiveSession(key);
     void loadSession(key);
   }, [loadSession, setActiveSession]);
@@ -199,6 +282,13 @@ export default function App() {
     }
   }, [trace, exporting, setCurrentSeq, setError]);
 
+  const selectProject = useCallback((key: string) => {
+    activeProjectKeyRef.current = key;
+    activeSessionKeyRef.current = undefined;
+    setActiveProject(key);
+    void loadProject(key);
+  }, [loadProject, setActiveProject]);
+
   // stable callbacks keep SessionRail's memo effective across playback ticks
   const collapseRail = useCallback(() => setRailCollapsed(true), [setRailCollapsed]);
   const expandRail = useCallback(() => setRailCollapsed(false), [setRailCollapsed]);
@@ -218,11 +308,22 @@ export default function App() {
     const params = new URL(window.location.href).searchParams;
     if (params.get("map") === "1") {
       void loadRepoMap(params.get("repo") ?? undefined);
+    } else if (useAppStore.getState().railMode === "projects") {
+      void scanProjects(false);
     } else {
       void scan(false);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // per-source walker colors, only for a merged project view (>1 session)
+  const sourceColors = useMemo(
+    () =>
+      trace?.sources && trace.sources.length > 1
+        ? trace.sources.map((_, i) => sessionColorHex(i))
+        : undefined,
+    [trace]
+  );
 
   const engine = useMemo(() => new PlaybackEngine(trace, city), [trace, city]);
   const playback = useMemo(() => engine.snapshotAt(currentSeq), [engine, currentSeq]);
@@ -259,17 +360,26 @@ export default function App() {
       .sort((a, b) => b.edits - a.edits || (a.path < b.path ? -1 : 1));
   }, [trace]);
 
+  // the empty-stage card and scanning toast follow the active rail mode, so a
+  // loaded project is never covered by a "No sessions found" overlay
+  const railEmpty = railMode === "projects" ? projects.length === 0 : sessions.length === 0;
+
   return (
     <main className={mapOnly ? "app-frame rail-collapsed" : railCollapsed ? "app-frame rail-collapsed" : "app-frame"}>
       {mapOnly ? null : (
         <SessionRail
           sessions={sessions}
+          projects={projects}
+          mode={railMode}
           activeKey={activeSessionKey}
+          activeProjectKey={activeProjectKey}
           loading={loading}
           hideEmpty={hideEmpty}
           harnessFilter={harnessFilter}
           collapsed={railCollapsed}
           onSelect={selectSession}
+          onSelectProject={selectProject}
+          onModeChange={changeMode}
           onRefresh={refresh}
           onHideEmptyChange={setHideEmpty}
           onHarnessFilterChange={setHarnessFilter}
@@ -297,6 +407,7 @@ export default function App() {
               selectedPath={selectedPath}
               onSelect={setSelectedPath}
               onCanvasReady={handleCanvasReady}
+              sourceColors={sourceColors}
             />
           ) : (
             <CityScene
@@ -306,6 +417,7 @@ export default function App() {
               onSelect={setSelectedPath}
               onCanvasReady={handleCanvasReady}
               locHeights={mapOnly}
+              sourceColors={sourceColors}
             />
           )}
           <Hud
@@ -330,10 +442,10 @@ export default function App() {
               onJumpTo={setCurrentSeq}
             />
           ) : null}
-          {!mapOnly && !loading && sessions.length === 0 ? (
+          {!mapOnly && !loading && railEmpty ? (
             <div className="empty-stage">
               <div className="card">
-                <h2>No sessions found</h2>
+                <h2>{railMode === "projects" ? "No projects found" : "No sessions found"}</h2>
                 <p>
                   mindwalk scans <code>~/.claude/projects</code> and <code>~/.codex/sessions</code> for agent
                   traces. Run a session there, then refresh.
@@ -342,7 +454,15 @@ export default function App() {
             </div>
           ) : null}
           {loading ? (
-            <div className="toast">{mapOnly ? "Building the map…" : sessions.length === 0 ? "Scanning sessions…" : "Reading trace…"}</div>
+            <div className="toast">
+              {mapOnly
+                ? "Building the map…"
+                : railEmpty
+                  ? railMode === "projects"
+                    ? "Scanning projects…"
+                    : "Scanning sessions…"
+                  : "Reading trace…"}
+            </div>
           ) : null}
           {error ? <div className="toast error">{error}</div> : null}
         </div>

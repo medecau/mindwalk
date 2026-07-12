@@ -592,6 +592,106 @@ func TestRepoMapCacheIsBounded(t *testing.T) {
 	}
 }
 
+func TestProjectsGroupSessionsByCwdAndMergeChronologically(t *testing.T) {
+	claudeDir := t.TempDir()
+	root := t.TempDir()
+	other := t.TempDir()
+	readLine := func(session, ts, file string) string {
+		return `{"type":"assistant","timestamp":"` + ts + `","sessionId":"` + session + `","cwd":` + quoteJSON(root) +
+			`,"message":{"role":"assistant","content":[{"type":"tool_use","id":"` + ts + `","name":"Read","input":{"file_path":` + quoteJSON(filepath.Join(root, file)) + `}}]}}`
+	}
+	// two sessions in the same repo, one in a different repo
+	writeServerSession(t, filepath.Join(claudeDir, "a.jsonl"),
+		`{"type":"user","timestamp":"2026-07-09T00:00:00Z","sessionId":"sess-a","cwd":`+quoteJSON(root)+`,"message":{"role":"user","content":"hi"}}`,
+		readLine("sess-a", "2026-07-09T00:00:01Z", "a.go"),
+		readLine("sess-a", "2026-07-09T00:00:05Z", "a.go"),
+	)
+	writeServerSession(t, filepath.Join(claudeDir, "b.jsonl"),
+		`{"type":"user","timestamp":"2026-07-09T00:00:02Z","sessionId":"sess-b","cwd":`+quoteJSON(root)+`,"message":{"role":"user","content":"hi"}}`,
+		readLine("sess-b", "2026-07-09T00:00:03Z", "b.go"),
+	)
+	writeServerSession(t, filepath.Join(claudeDir, "c.jsonl"),
+		`{"type":"user","timestamp":"2026-07-09T00:00:00Z","sessionId":"sess-c","cwd":`+quoteJSON(other)+`,"message":{"role":"user","content":"hi"}}`,
+	)
+
+	s := New(Config{ClaudeDir: claudeDir, CodexDir: filepath.Join(t.TempDir(), "codex")})
+
+	projResp := httptest.NewRecorder()
+	s.handleProjects(projResp, httptest.NewRequest(http.MethodGet, "/api/projects", nil))
+	if projResp.Code != http.StatusOK {
+		t.Fatalf("projects status = %d body=%s", projResp.Code, projResp.Body.String())
+	}
+	var projects []model.ProjectMeta
+	if err := json.Unmarshal(projResp.Body.Bytes(), &projects); err != nil {
+		t.Fatal(err)
+	}
+	if len(projects) != 2 {
+		t.Fatalf("projects = %#v", projects)
+	}
+	var repo *model.ProjectMeta
+	for i := range projects {
+		if projects[i].Path == filepath.Clean(root) {
+			repo = &projects[i]
+		}
+	}
+	if repo == nil {
+		t.Fatalf("root project missing from %#v", projects)
+	}
+	if repo.SessionCount != 2 || repo.EventCount != 3 {
+		t.Fatalf("root project = %#v, want 2 sessions / 3 events", *repo)
+	}
+	if repo.Key != projectKey(root) {
+		t.Fatalf("project key = %q, want %q", repo.Key, projectKey(root))
+	}
+
+	snapResp := httptest.NewRecorder()
+	s.handleProjectResource(snapResp, httptest.NewRequest(http.MethodGet, "/api/projects/"+repo.Key+"/snapshot", nil))
+	if snapResp.Code != http.StatusOK {
+		t.Fatalf("snapshot status = %d body=%s", snapResp.Code, snapResp.Body.String())
+	}
+	var snapshot struct {
+		Trace model.Trace   `json:"trace"`
+		City  model.CityMap `json:"city"`
+	}
+	if err := json.Unmarshal(snapResp.Body.Bytes(), &snapshot); err != nil {
+		t.Fatal(err)
+	}
+	if len(snapshot.Trace.Sources) != 2 {
+		t.Fatalf("sources = %#v", snapshot.Trace.Sources)
+	}
+	// sources ordered by start time: sess-a (00:00:00) before sess-b (00:00:02)
+	if snapshot.Trace.Sources[0].ID != "sess-a" || snapshot.Trace.Sources[1].ID != "sess-b" {
+		t.Fatalf("source order = %q, %q", snapshot.Trace.Sources[0].ID, snapshot.Trace.Sources[1].ID)
+	}
+	// merged events ascend by timestamp: a@01 (src0), b@03 (src1), a@05 (src0)
+	wantTS := []string{"2026-07-09T00:00:01Z", "2026-07-09T00:00:03Z", "2026-07-09T00:00:05Z"}
+	wantSrc := []int{0, 1, 0}
+	if len(snapshot.Trace.Events) != 3 {
+		t.Fatalf("events = %#v", snapshot.Trace.Events)
+	}
+	for i, e := range snapshot.Trace.Events {
+		if e.Seq != i {
+			t.Fatalf("event %d seq = %d", i, e.Seq)
+		}
+		if e.Timestamp != wantTS[i] {
+			t.Fatalf("event %d ts = %q, want %q", i, e.Timestamp, wantTS[i])
+		}
+		if e.Source != wantSrc[i] {
+			t.Fatalf("event %d src = %d, want %d", i, e.Source, wantSrc[i])
+		}
+	}
+	if snapshot.Trace.Session.Cwd != filepath.Clean(root) {
+		t.Fatalf("merged cwd = %q", snapshot.Trace.Session.Cwd)
+	}
+
+	// requesting an unknown project is a 404, not a panic
+	missing := httptest.NewRecorder()
+	s.handleProjectResource(missing, httptest.NewRequest(http.MethodGet, "/api/projects/project-deadbeef/snapshot", nil))
+	if missing.Code != http.StatusNotFound {
+		t.Fatalf("unknown project status = %d, want 404", missing.Code)
+	}
+}
+
 func writeServerSession(t *testing.T, path string, lines ...string) {
 	t.Helper()
 	content := ""
