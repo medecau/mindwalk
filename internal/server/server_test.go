@@ -16,6 +16,37 @@ import (
 	"github.com/cosmtrek/mindwalk/internal/model"
 )
 
+func TestLoopbackOnlyRejectsForeignHost(t *testing.T) {
+	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+	handler := loopbackOnly(next)
+
+	cases := []struct {
+		host string
+		want int
+	}{
+		{"127.0.0.1:8765", http.StatusOK},
+		{"localhost:8765", http.StatusOK},
+		{"[::1]:8765", http.StatusOK},
+		{"127.0.0.1", http.StatusOK},
+		{"127.9.9.9:8765", http.StatusOK},
+		{"evil.example:8765", http.StatusForbidden},
+		{"attacker.test", http.StatusForbidden},
+		{"169.254.169.254", http.StatusForbidden},
+		{"", http.StatusForbidden},
+	}
+	for _, tc := range cases {
+		req := httptest.NewRequest(http.MethodGet, "/api/sessions", nil)
+		req.Host = tc.host
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		if rec.Code != tc.want {
+			t.Errorf("host %q: status = %d, want %d", tc.host, rec.Code, tc.want)
+		}
+	}
+}
+
 func TestTraceStillLoadsWhenSessionCwdIsMissing(t *testing.T) {
 	claudeDir := t.TempDir()
 	missingRoot := filepath.Join(t.TempDir(), "deleted-repo")

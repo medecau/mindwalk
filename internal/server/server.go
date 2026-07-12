@@ -113,6 +113,7 @@ func (s *Server) Start(openBrowser bool) error {
 	mux.HandleFunc("/api/sessions/", s.handleSessionResource)
 	mux.HandleFunc("/api/repomap", s.handleRepoMap)
 	mux.HandleFunc("/", s.handleStatic)
+	handler := loopbackOnly(mux)
 
 	port := s.cfg.Port
 	if port == 0 {
@@ -140,7 +141,40 @@ func (s *Server) Start(openBrowser bool) error {
 		_ = openURL(pageURL)
 	}
 	fmt.Printf("mindwalk serving %s\n", addr)
-	return http.Serve(ln, mux)
+	return http.Serve(ln, handler)
+}
+
+// loopbackOnly rejects requests whose Host header is not a loopback name. The
+// server binds 127.0.0.1 only and serves private session traces plus repository
+// source, so this defends against DNS rebinding: a page served from an external
+// domain that rebinds to 127.0.0.1 still carries that domain in its Host header
+// and never matches the loopback allowlist, while every legitimate request
+// (direct navigation or the Vite dev proxy) presents a loopback Host.
+func loopbackOnly(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !isLoopbackHost(r.Host) {
+			http.Error(w, "forbidden host", http.StatusForbidden)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+func isLoopbackHost(host string) bool {
+	if host == "" {
+		return false
+	}
+	name, _, err := net.SplitHostPort(host)
+	if err != nil {
+		name = host // no port present
+	}
+	if strings.EqualFold(name, "localhost") {
+		return true
+	}
+	if ip := net.ParseIP(name); ip != nil {
+		return ip.IsLoopback()
+	}
+	return false
 }
 
 func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
