@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -442,6 +443,121 @@ func TestServerSkipsCodexSubagentSessions(t *testing.T) {
 	}
 	if !foundSubagent {
 		t.Fatalf("explicit subagent missing from %#v", explicitSessions)
+	}
+}
+
+func TestRepoMapServesCitymapWithoutSession(t *testing.T) {
+	repoRoot := t.TempDir()
+	if err := os.WriteFile(filepath.Join(repoRoot, "a.go"), []byte("package demo\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repoRoot, "b.go"), []byte("package demo\n\nfunc B() {}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	s := New(Config{RepoRoot: repoRoot, MapOnly: true})
+	resp := httptest.NewRecorder()
+	s.handleRepoMap(resp, httptest.NewRequest(http.MethodGet, "/api/repomap", nil))
+	if resp.Code != http.StatusOK {
+		t.Fatalf("repomap status = %d body=%s", resp.Code, resp.Body.String())
+	}
+	var city model.CityMap
+	if err := json.Unmarshal(resp.Body.Bytes(), &city); err != nil {
+		t.Fatal(err)
+	}
+	if len(city.Files) != 2 || city.Repo.Root == "" {
+		t.Fatalf("city = %#v", city)
+	}
+
+	// A second request returns the cached build.
+	if _, err := s.repoCityMap(repoRoot); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestRepoMapAcceptsRepoQueryParam(t *testing.T) {
+	repoRoot := t.TempDir()
+	if err := os.WriteFile(filepath.Join(repoRoot, "a.go"), []byte("package demo\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// No RepoRoot configured; the repo comes entirely from the query param.
+	s := New(Config{})
+	resp := httptest.NewRecorder()
+	s.handleRepoMap(resp, httptest.NewRequest(http.MethodGet, "/api/repomap?repo="+url.QueryEscape(repoRoot), nil))
+	if resp.Code != http.StatusOK {
+		t.Fatalf("repomap status = %d body=%s", resp.Code, resp.Body.String())
+	}
+	var city model.CityMap
+	if err := json.Unmarshal(resp.Body.Bytes(), &city); err != nil {
+		t.Fatal(err)
+	}
+	if len(city.Files) != 1 {
+		t.Fatalf("city = %#v", city)
+	}
+}
+
+func TestRepoMapWithoutRepoRootReturns404(t *testing.T) {
+	s := New(Config{})
+	resp := httptest.NewRecorder()
+	s.handleRepoMap(resp, httptest.NewRequest(http.MethodGet, "/api/repomap", nil))
+	if resp.Code != http.StatusNotFound {
+		t.Fatalf("repomap status = %d, want 404", resp.Code)
+	}
+}
+
+func TestRepoMapCacheExpiresWhenRepoChanges(t *testing.T) {
+	repoRoot := t.TempDir()
+	if err := os.WriteFile(filepath.Join(repoRoot, "a.go"), []byte("package demo\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	s := New(Config{RepoRoot: repoRoot})
+	first, err := s.repoCityMap(repoRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(first.Files) != 1 {
+		t.Fatalf("initial files = %d, want 1", len(first.Files))
+	}
+
+	// add a file, then age the cache entry past its TTL: the next build must
+	// pick up the new file instead of returning the stale map
+	if err := os.WriteFile(filepath.Join(repoRoot, "b.go"), []byte("package demo\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	abs, _ := filepath.Abs(repoRoot)
+	s.repoMapMu.Lock()
+	entry := s.repoMaps[abs]
+	entry.builtAt = entry.builtAt.Add(-2 * repoMapTTL)
+	s.repoMaps[abs] = entry
+	s.repoMapMu.Unlock()
+
+	second, err := s.repoCityMap(repoRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(second.Files) != 2 {
+		t.Fatalf("files after change = %d, want 2 (stale cache returned)", len(second.Files))
+	}
+}
+
+func TestRepoMapCacheIsBounded(t *testing.T) {
+	s := New(Config{})
+	for i := 0; i < repoMapMaxEntries+5; i++ {
+		repo := t.TempDir()
+		if err := os.WriteFile(filepath.Join(repo, "a.go"), []byte("package demo\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := s.repoCityMap(repo); err != nil {
+			t.Fatal(err)
+		}
+	}
+	s.repoMapMu.Lock()
+	n := len(s.repoMaps)
+	s.repoMapMu.Unlock()
+	if n > repoMapMaxEntries {
+		t.Fatalf("repo map cache size = %d, want <= %d", n, repoMapMaxEntries)
 	}
 }
 
