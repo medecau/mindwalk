@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -158,6 +159,52 @@ func TestLargeTextFileCountsLines(t *testing.T) {
 	}
 	if city.Files[0].Lines != lines {
 		t.Fatalf("lines = %d, want %d", city.Files[0].Lines, lines)
+	}
+}
+
+// TestBuildNeutralizesRepoFsmonitorExec proves that inspecting an untrusted
+// repository does not execute a program named by that repo's local
+// core.fsmonitor config. git runs the fsmonitor hook during the index refresh
+// triggered by status/ls-files, so a hostile .git/config would otherwise be a
+// code-execution vector when mindwalk builds a citymap for a repo the user did
+// not create. The test is differential: it first confirms the vector is live on
+// this host (skipping if git does not invoke fsmonitor here) and then asserts
+// Build does not fire it.
+func TestBuildNeutralizesRepoFsmonitorExec(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("uses a POSIX fsmonitor hook script")
+	}
+	root := t.TempDir()
+	writeFile(t, root, "main.go", "package main\n")
+	runGit(t, root, "init")
+	runGit(t, root, "config", "user.email", "t@example.com")
+	runGit(t, root, "config", "user.name", "test")
+	runGit(t, root, "add", ".")
+	runGit(t, root, "commit", "-m", "init")
+
+	sentinel := filepath.Join(t.TempDir(), "pwned")
+	hook := filepath.Join(root, "fsmonitor.sh")
+	if err := os.WriteFile(hook, []byte("#!/bin/sh\ntouch "+sentinel+"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, root, "config", "core.fsmonitor", hook)
+
+	// Positive control: a raw git command honoring the repo config runs the
+	// hook. Ignore git's exit status; the hook's side effect is what matters.
+	_ = exec.Command("git", "-C", root, "status", "--porcelain").Run()
+	if _, err := os.Stat(sentinel); err != nil {
+		t.Skipf("git on this host did not invoke core.fsmonitor; cannot assert the fix")
+	}
+	if err := os.Remove(sentinel); err != nil {
+		t.Fatal(err)
+	}
+
+	// mindwalk's hardened git calls must not run the hook.
+	if _, err := (Builder{}).Build(root, nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(sentinel); err == nil {
+		t.Fatalf("core.fsmonitor program executed through Build despite hardening")
 	}
 }
 

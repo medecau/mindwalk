@@ -87,8 +87,24 @@ func (Builder) Build(repoRoot string, trace *model.Trace) (*model.CityMap, error
 	}, nil
 }
 
+// gitCommand builds a read-only git invocation hardened against repo-local
+// configuration that can execute arbitrary programs. mindwalk inspects
+// repositories it did not create, and git honors a repo's own .git/config:
+// settings such as core.fsmonitor (a program path) or a custom core.hooksPath
+// are run during the index refresh that status/ls-files trigger. Command-line
+// -c overrides the repo config, so we force those exec vectors off before
+// touching an untrusted tree.
+func gitCommand(root string, args ...string) *exec.Cmd {
+	full := append([]string{
+		"-c", "core.fsmonitor=false",
+		"-c", "core.hooksPath=/dev/null",
+		"-C", root,
+	}, args...)
+	return exec.Command("git", full...)
+}
+
 func listFiles(root string) ([]string, error) {
-	cmd := exec.Command("git", "-C", root, "ls-files", "-co", "--exclude-standard", "-z")
+	cmd := gitCommand(root, "ls-files", "-co", "--exclude-standard", "-z")
 	out, err := cmd.Output()
 	if err == nil && len(out) > 0 {
 		parts := bytes.Split(out, []byte{0})
@@ -237,13 +253,13 @@ func langForPath(path string) string {
 }
 
 func repoState(root string) (string, bool) {
-	commitBytes, err := exec.Command("git", "-C", root, "rev-parse", "--short", "HEAD").Output()
+	commitBytes, err := gitCommand(root, "rev-parse", "--short", "HEAD").Output()
 	commit := ""
 	if err == nil {
 		commit = strings.TrimSpace(string(commitBytes))
 	}
 
-	statusBytes, err := exec.Command("git", "-C", root, "status", "--porcelain").Output()
+	statusBytes, err := gitCommand(root, "status", "--porcelain").Output()
 	dirty := err == nil && len(bytes.TrimSpace(statusBytes)) > 0
 	return commit, dirty
 }
