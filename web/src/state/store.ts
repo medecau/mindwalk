@@ -28,6 +28,7 @@ interface AppState {
   // immersive: hide all chrome, leaving only the 3D scene (components stay
   // mounted so playback and shortcuts keep running)
   immersive: boolean;
+  historyMode: boolean;
   setView: (view: SceneView) => void;
   setSessions: (sessions: SessionMeta[]) => void;
   setProjects: (projects: ProjectMeta[]) => void;
@@ -36,6 +37,7 @@ interface AppState {
   setActiveProject: (key?: string) => void;
   setData: (trace: Trace, city: CityMap, atStart?: boolean) => void;
   setCityOnly: (city: CityMap) => void;
+  setHistory: (trace: Trace, city: CityMap) => void;
   setCurrentSeq: (seq: number) => void;
   setSelectedPath: (path?: string) => void;
   setLoading: (loading: boolean) => void;
@@ -91,6 +93,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   railCollapsed: loadRailCollapsed(),
   mapOnly: false,
   immersive: loadImmersive(),
+  historyMode: false,
   setView: (view) => set({ view }),
   setSessions: (sessions) => set({ sessions }),
   setProjects: (projects) => set({ projects }),
@@ -126,6 +129,10 @@ export const useAppStore = create<AppState>((set, get) => ({
     set({ trace, city, currentSeq: atStart ? 0 : Math.max(0, trace.events.length - 1) }),
   // static full-repo map: render the city with no session/trace attached
   setCityOnly: (city) => set({ city, trace: undefined, currentSeq: 0, selectedPath: undefined, mapOnly: true }),
+  // git history: a full trace+city synthetic session, replayed from commits.
+  // Start at the first commit (seq 0) so the repo grows as it plays, rather than
+  // opening at the end like a finished session.
+  setHistory: (trace, city) => set({ trace, city, currentSeq: 0, selectedPath: undefined, historyMode: true }),
   setCurrentSeq: (currentSeq) => set({ currentSeq }),
   setSelectedPath: (selectedPath) => set({ selectedPath }),
   setLoading: (loading) => set({ loading }),

@@ -3,6 +3,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   buildProject,
   describeError,
+  getHistory,
   getProjectSnapshot,
   getRepoMap,
   getSessionSnapshot,
@@ -46,6 +47,7 @@ export default function App() {
     railCollapsed,
     mapOnly,
     immersive,
+    historyMode,
     setView,
     setSessions,
     setProjects,
@@ -54,6 +56,7 @@ export default function App() {
     setActiveProject,
     setData,
     setCityOnly,
+    setHistory,
     setCurrentSeq,
     setSelectedPath,
     setLoading,
@@ -275,6 +278,24 @@ export default function App() {
     }
   }, [beginLoading, endLoading, loadProject, setActiveProject, setError, setProjects]);
 
+  const loadHistory = useCallback(async (repo?: string) => {
+    beginLoading();
+    setError(undefined);
+    try {
+      const { trace: nextTrace, city: nextCity } = await getHistory(repo);
+      setHistory(nextTrace, nextCity);
+    } catch (err) {
+      setError(describeError(err, "loading the git history"));
+    } finally {
+      endLoading();
+    }
+  }, [beginLoading, endLoading, setHistory, setError]);
+
+  const openHistory = useCallback((repo?: string) => {
+    const url = repo ? `/?history=1&repo=${encodeURIComponent(repo)}` : "/?history=1";
+    window.open(url, "_blank", "noopener");
+  }, []);
+
   const refresh = useCallback(() => {
     if (manualRefreshInFlight.current) return;
     manualRefreshInFlight.current = true;
@@ -397,6 +418,8 @@ export default function App() {
     const params = new URL(window.location.href).searchParams;
     if (params.get("map") === "1") {
       void loadRepoMap(params.get("repo") ?? undefined);
+    } else if (params.get("history") === "1") {
+      void loadHistory(params.get("repo") ?? undefined);
     } else if (useAppStore.getState().railMode === "projects") {
       void scanProjects(false);
     } else {
@@ -416,6 +439,27 @@ export default function App() {
 
   const engine = useMemo(() => new PlaybackEngine(trace, city), [trace, city]);
   const playback = useMemo(() => engine.snapshotAt(currentSeq), [engine, currentSeq]);
+  // git history: paths touched by the commit at the playhead, drawn blue in the
+  // terrain to mark whose turn it is this frame
+  const currentTouchPaths = useMemo(() => {
+    if (!historyMode || !trace) return undefined;
+    const event = trace.events[Math.min(currentSeq, trace.events.length - 1)];
+    return new Set((event?.targets ?? []).map((t) => t.path));
+  }, [historyMode, trace, currentSeq]);
+  // git history: fixed color-ramp ceiling = log2 of the largest single-commit
+  // file churn across the whole history. Computed once per trace so a file's
+  // color tier stays stable as the playhead moves.
+  const historyMaxLog = useMemo(() => {
+    if (!historyMode || !trace) return 0;
+    let maxLOC = 1;
+    for (const event of trace.events) {
+      for (const target of event.targets) {
+        const pair = target.lines?.[0];
+        if (pair) maxLOC = Math.max(maxLOC, pair[0] + pair[1]);
+      }
+    }
+    return Math.log2(maxLOC);
+  }, [historyMode, trace]);
   // live tallies for the HUD spectrum; touchByPath mirrors the backend stats scope
   const touchCounts = useMemo(() => {
     let edited = 0;
@@ -453,13 +497,17 @@ export default function App() {
   // loaded project is never covered by a "No sessions found" overlay
   const railEmpty = railMode === "projects" ? projects.length === 0 : sessions.length === 0;
 
-  const frameClass = ["app-frame", mapOnly || railCollapsed ? "rail-collapsed" : "", immersive ? "immersive" : ""]
+  const frameClass = [
+    "app-frame",
+    mapOnly || historyMode || railCollapsed ? "rail-collapsed" : "",
+    immersive ? "immersive" : ""
+  ]
     .filter(Boolean)
     .join(" ");
 
   return (
     <main className={frameClass}>
-      {mapOnly ? null : (
+      {mapOnly || historyMode ? null : (
         <SessionRail
           sessions={sessions}
           projects={projects}
@@ -481,12 +529,13 @@ export default function App() {
           onHarnessFilterChange={setHarnessFilter}
           onCollapse={collapseRail}
           onOpenMap={openMap}
+          onOpenHistory={openHistory}
           locked={exporting}
         />
       )}
       <section className="stage">
         <div className="viewport">
-          {!mapOnly && railCollapsed ? (
+          {!mapOnly && !historyMode && railCollapsed ? (
             <button
               className="rail-expand"
               onClick={expandRail}
@@ -514,6 +563,9 @@ export default function App() {
               onCanvasReady={handleCanvasReady}
               locHeights={mapOnly}
               sourceColors={sourceColors}
+              historyColors={historyMode}
+              currentTouchPaths={currentTouchPaths}
+              historyMaxLog={historyMaxLog}
             />
           )}
           <Hud
@@ -527,6 +579,7 @@ export default function App() {
             onViewChange={setView}
             onSelectFile={setSelectedPath}
             onOpenMap={openMap}
+            onOpenHistory={openHistory}
             locked={exporting}
           />
           {selectedFile ? (
@@ -546,7 +599,7 @@ export default function App() {
               onCancel={cancelBuild}
             />
           ) : null}
-          {!mapOnly && !loading && railEmpty ? (
+          {!mapOnly && !historyMode && !loading && railEmpty ? (
             <div className="empty-stage">
               <div className="card">
                 <h2>{railMode === "projects" ? "No projects found" : "No sessions found"}</h2>
@@ -561,11 +614,13 @@ export default function App() {
             <div className="toast">
               {mapOnly
                 ? "Building the map…"
-                : railEmpty
-                  ? railMode === "projects"
-                    ? "Scanning projects…"
-                    : "Scanning sessions…"
-                  : "Reading trace…"}
+                : historyMode
+                  ? "Reading git history…"
+                  : railEmpty
+                    ? railMode === "projects"
+                      ? "Scanning projects…"
+                      : "Scanning sessions…"
+                    : "Reading trace…"}
             </div>
           ) : null}
           {error ? <div className="toast error">{error}</div> : null}

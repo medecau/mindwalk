@@ -29,6 +29,16 @@ interface CitySceneProps {
   // one hex color per source session; present only in a merged project view,
   // where the walker (trail + firefly) is tinted by whose action it plays
   sourceColors?: string[];
+  // git history mode: color each touched file by the size (churn) of the commit
+  // that last touched it, on the LOC tier ramp
+  historyColors?: boolean;
+  // git history mode: paths touched by the commit at the current playhead —
+  // drawn blue to mark whose turn it is
+  currentTouchPaths?: Set<string>;
+  // git history mode: log2 of the largest single-commit file churn across the
+  // whole history — the fixed normalization ceiling for the LOC color ramp, so
+  // a file's tier doesn't drift as the playhead moves
+  historyMaxLog?: number;
 }
 
 // Attention terrain: the map is a flat dark plain (fog of war); height is
@@ -88,6 +98,10 @@ function locColor(t: number): THREE.Color {
   return LOC_RAMP[LOC_RAMP.length - 1].color.clone();
 }
 
+// git history: files touched by the commit at the current playhead glow blue,
+// marking whose turn it is this frame
+const HISTORY_BLUE = new THREE.Color("#4ea3e0");
+
 interface TerrainSlot {
   fileId: number;
   target: number;
@@ -101,7 +115,10 @@ export function CityScene({
   onSelect,
   onCanvasReady,
   locHeights,
-  sourceColors
+  sourceColors,
+  historyColors,
+  currentTouchPaths,
+  historyMaxLog = 0
 }: CitySceneProps) {
   const hostRef = useRef<HTMLDivElement | null>(null);
   const tileMeshRef = useRef<THREE.InstancedMesh | null>(null);
@@ -527,6 +544,19 @@ export function CityScene({
     const maxLog = locHeights
       ? Math.log2(Math.max(1, city.files.reduce((m, f) => Math.max(m, f.lines), 1)))
       : 0;
+
+    // git history mode: churn of the last commit that touched a file, looked up
+    // per touched file from the playback history (each file's event list). The
+    // normalization ceiling (historyMaxLog) is precomputed from the full trace
+    // and passed in, so it's stable across the playhead and we don't scan the
+    // whole history here every tick.
+    const lastCommitLOC = (path: string): number => {
+      const events = playback.historyByPath.get(path);
+      const last = events?.[events.length - 1];
+      const pair = last?.targets.find((t) => t.path === path)?.lines?.[0];
+      return pair ? pair[0] + pair[1] : 0;
+    };
+
     for (const file of city.files) {
       const touch = playback.touchByFile.get(file.id);
       const selected = file.path === selectedPath;
@@ -538,6 +568,16 @@ export function CityScene({
         // to 1 outside a multi-session project view, leaving this unchanged)
         const decay = playback.decayBySource.get(playback.sourceByFile.get(file.id) ?? -1) ?? 1;
         let color = colors[touch].clone().lerp(colors.unvisited, 1 - decay);
+        if (historyColors) {
+          // color by commit size (churn) on the LOC ramp; the current commit's
+          // files override to blue
+          if (currentTouchPaths?.has(file.path)) {
+            color = HISTORY_BLUE.clone();
+          } else {
+            const t = locFraction(lastCommitLOC(file.path), historyMaxLog);
+            color = locColor(t);
+          }
+        }
         if (file.ghost) color = color.lerp(colors.ghost, 0.45);
         if (selected) color = colors.selected;
         slots.push({ fileId: file.id, target: attentionHeight(touch, visits) * decay, color });
@@ -565,7 +605,7 @@ export function CityScene({
     if (terrain.instanceColor) terrain.instanceColor.needsUpdate = true;
     if (tiles.instanceColor) tiles.instanceColor.needsUpdate = true;
     slotsRef.current = slots;
-  }, [city, playback, selectedPath, locHeights]);
+  }, [city, playback, selectedPath, locHeights, historyColors, currentTouchPaths, historyMaxLog]);
 
   // the inspector opens over the right edge; pan the selected tile clear of it
   useEffect(() => {
