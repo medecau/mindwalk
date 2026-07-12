@@ -208,6 +208,28 @@ func TestBuildNeutralizesRepoFsmonitorExec(t *testing.T) {
 	}
 }
 
+// TestFileWeightLogSizing pins the terrain-view sizing: rectangle area is
+// proportional to fileWeight, so a multi-megabyte file must not dwarf the
+// kilobyte source files, and a huge line count must not drive area on its own.
+func TestFileWeightLogSizing(t *testing.T) {
+	source := fileWeight(model.CityFile{Bytes: 6 * 1024, Lines: 200})
+	huge := fileWeight(model.CityFile{Bytes: 4 * 1024 * 1024, Lines: 1})
+	if huge <= source {
+		t.Fatalf("bigger file should still be bigger: huge=%v source=%v", huge, source)
+	}
+	if ratio := huge / source; ratio > 2 {
+		t.Fatalf("area ratio %.2f too large; log10 sizing should keep a 4MB file near source files", ratio)
+	}
+
+	// Weight depends on bytes, not line count: a generated lockfile with tens of
+	// thousands of lines but modest bytes once dominated via sqrt(max(lines,…)).
+	few := fileWeight(model.CityFile{Bytes: 8 * 1024, Lines: 5})
+	many := fileWeight(model.CityFile{Bytes: 8 * 1024, Lines: 60000})
+	if few != many {
+		t.Fatalf("weight should ignore line count: few=%v many=%v", few, many)
+	}
+}
+
 func writeFile(t *testing.T, root, rel, content string) {
 	t.Helper()
 	path := filepath.Join(root, filepath.FromSlash(rel))

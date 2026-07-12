@@ -82,7 +82,7 @@ func (Builder) Build(repoRoot string, trace *model.Trace) (*model.CityMap, error
 		Dirs:  dirs,
 		Layout: model.LayoutMeta{
 			Algorithm: "squarified-treemap-v1",
-			Weight:    "sqrt(max(lines, bytes/4096, 16))",
+			Weight:    "log10(max(bytes, 16))",
 		},
 	}, nil
 }
@@ -417,15 +417,22 @@ func capAspect(rect model.Rect, maxRatio float64) model.Rect {
 	return rect
 }
 
+// minFileBytes floors the size fed to fileWeight so empty and near-empty files
+// still get a rectangle (and log10 stays well-defined and non-negative).
+const minFileBytes = 16
+
 func fileWeight(file model.CityFile) float64 {
-	units := float64(file.Lines)
-	if byteUnits := float64(file.Bytes) / 4096.0; byteUnits > units {
-		units = byteUnits
+	// Rectangle area is proportional to this weight, so size it by log10 of the
+	// file's bytes: the dynamic range collapses to orders of magnitude, and a
+	// multi-megabyte file (usually generated — lockfiles, bundles, data blobs)
+	// no longer dwarfs the kilobyte source files around it. Keying on bytes
+	// alone (rather than max(lines, bytes/4096)) also stops a huge line count
+	// from dominating on its own axis.
+	size := float64(file.Bytes)
+	if size < minFileBytes {
+		size = minFileBytes
 	}
-	if units < 16 {
-		units = 16
-	}
-	return math.Sqrt(units)
+	return math.Log10(size)
 }
 
 type placedItem struct {
