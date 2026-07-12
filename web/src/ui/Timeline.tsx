@@ -401,33 +401,33 @@ export function Timeline({ trace, currentSeq, onChange, onExport, exporting = fa
             ))}
           </span>
           <span className="legend-sep" />
-          {multiSession && sources ? (
-            <span className="legend-group">
-              {sources.map((source, i) => (
-                <span key={source.key} className="legend-item" title={sourceTitle(sources, i)}>
-                  <span className="session-swatch" style={{ background: sessionColorHex(i) }} />
-                  {sourceLabel(sources, i)}
-                </span>
-              ))}
+          <span className="legend-group">
+            <span className="legend-item">
+              <span className="legend-glyph compaction" />
+              compaction
             </span>
-          ) : (
-            <span className="legend-group">
-              <span className="legend-item">
-                <span className="legend-glyph compaction" />
-                compaction
-              </span>
-              <span className="legend-item">
-                <span className="legend-glyph subagent" />
-                subagent
-              </span>
-              <span className="legend-item">
-                <span className="legend-glyph user-message" />
-                user turn
-              </span>
+            <span className="legend-item">
+              <span className="legend-glyph subagent" />
+              subagent
             </span>
-          )}
+            <span className="legend-item">
+              <span className="legend-glyph user-message" />
+              user turn
+            </span>
+          </span>
         </div>
       </div>
+      {multiSession && sources ? (
+        <div className="deck-sessions" aria-hidden>
+          <span className="deck-sessions-label">sessions</span>
+          {sources.map((source, i) => (
+            <span key={source.key} className="legend-item" title={sourceTitle(sources, i)}>
+              <span className="session-swatch" style={{ background: sessionColorHex(i) }} />
+              {sourceLabel(sources, i)}
+            </span>
+          ))}
+        </div>
+      ) : null}
     </footer>
   );
 }
