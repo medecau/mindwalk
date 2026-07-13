@@ -2,7 +2,7 @@
 
 A visualization tool that replays coding-agent sessions on a 3D map of your codebase.
 
-https://github.com/user-attachments/assets/6490cd77-0374-4f36-a6e7-24267d5c61f3
+https://github.com/user-attachments/assets/20ecdc3b-9bc2-469b-ba99-607f3c1d5e0c
 
 *The 30-second demo — sound on.*
 
