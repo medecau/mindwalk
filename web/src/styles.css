@@ -808,6 +808,14 @@ dd {
   justify-self: end;
 }
 
+/* this control sits at the right edge of the viewport, so its hint must grow
+   leftward like .map-menu does — the shared [data-hint] rule anchors left:0,
+   which would run the tooltip off-screen here */
+.map-controls [data-hint]::after {
+  left: auto;
+  right: 0;
+}
+
 .map-btn {
   display: inline-flex;
   align-items: center;
