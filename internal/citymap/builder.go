@@ -400,6 +400,15 @@ func computeWeight(n *node, files []model.CityFile) float64 {
 // wherever a rect is finalized, not only on file leaves.
 const maxAspect = 1.5
 
+// jitterAmp is how much a non-root split point can wander from its exact
+// weight-share fraction. splitClamp then bounds where that jittered fraction
+// can land, so even a light bucket keeps a usable share of the cell instead
+// of being squeezed toward a sliver.
+const (
+	jitterAmp  = 0.25
+	splitClamp = 0.2
+)
+
 // quadItem is one thing competing for space under a node's split: either a
 // child directory (recurses via layoutNode) or the node's own loose files
 // (placed directly, no CityDir of its own). Treating both the same way is
@@ -433,9 +442,9 @@ func layoutNode(n *node, rect model.Rect, level int, files *[]model.CityFile, di
 	}
 
 	// The root's own split is never jittered, so the top-level "+" between
-	// quadrant districts reads as a crisp, literal cross. Jitter (and the
-	// resulting organic feel) grows with depth.
-	jitter := 0.4
+	// quadrant districts reads as a crisp, literal cross. Every other node
+	// gets the same jitterAmp regardless of depth.
+	jitter := jitterAmp
 	if n.path == "" {
 		jitter = 0
 	}
@@ -475,7 +484,7 @@ func layoutItems(items []quadItem, rect model.Rect, level int, saltPath string, 
 			continue
 		}
 		subSalt := saltPath + "#" + strconv.Itoa(i)
-		layoutItems(bucket, placed, level+1, subSalt, 0.4, files, dirs)
+		layoutItems(bucket, placed, level+1, subSalt, jitterAmp, files, dirs)
 	}
 }
 
@@ -673,7 +682,7 @@ func farness(x, z float64) float64 { return x*x + z*z }
 // the center first."
 func splitTwo(saltPath string, rect model.Rect, outWeight, inWeight, jitterAmp float64) []model.Rect {
 	share := outWeight / math.Max(outWeight+inWeight, 1e-9)
-	f := clamp(share+(hashFrac(saltPath, "s")-0.5)*jitterAmp, 0.15, 0.85)
+	f := clamp(share+(hashFrac(saltPath, "s")-0.5)*jitterAmp, splitClamp, 1-splitClamp)
 
 	if rect.W >= rect.D {
 		outward := farness(rect.X, rect.Z+rect.D/2) >= farness(rect.X+rect.W, rect.Z+rect.D/2)
@@ -732,8 +741,8 @@ func splitFour(saltPath string, rect model.Rect, weights []float64, jitterAmp fl
 	}
 	left, right := weightBySlot[0]+weightBySlot[2], weightBySlot[1]+weightBySlot[3]
 	top, bottom := weightBySlot[0]+weightBySlot[1], weightBySlot[2]+weightBySlot[3]
-	fx := clamp(left/math.Max(left+right, 1e-9)+(hashFrac(saltPath, "x")-0.5)*jitterAmp, 0.15, 0.85)
-	fy := clamp(top/math.Max(top+bottom, 1e-9)+(hashFrac(saltPath, "y")-0.5)*jitterAmp, 0.15, 0.85)
+	fx := clamp(left/math.Max(left+right, 1e-9)+(hashFrac(saltPath, "x")-0.5)*jitterAmp, splitClamp, 1-splitClamp)
+	fy := clamp(top/math.Max(top+bottom, 1e-9)+(hashFrac(saltPath, "y")-0.5)*jitterAmp, splitClamp, 1-splitClamp)
 	splitX := rect.X + rect.W*fx
 	splitZ := rect.Z + rect.D*fy
 
@@ -758,13 +767,13 @@ func sumFileWeight(idxs []int, files []model.CityFile) float64 {
 	return total
 }
 
-// placeFiles packs file footprints into rect by generate-then-place-with-
-// slack: each footprint's area comes from its weight share of the cell at
-// ~65% density (the rest reads as plaza), its aspect is drawn from a hash of
-// its own path so it lands in [1/maxAspect, maxAspect] by construction, and
-// it is shelf-packed row by row with a small hashed position jitter clamped
-// fully inside rect -- the clamp is what keeps jittered footprints from ever
-// spilling past the cell into a sibling's.
+// placeFiles tiles rect with one rect per file, weight-proportional and
+// overlap-free, via squarify (below), then shrinks each result by a small
+// uniform seam so neighboring tiles read as distinct blocks -- thin dark
+// gutters -- instead of an edge-to-edge slab where two coplanar boxes would
+// z-fight. capAspect stays on as a backstop: squarify rows are usually
+// near-square already, but an extreme weight outlier can still produce one
+// that isn't.
 func placeFiles(idxs []int, rect model.Rect, files *[]model.CityFile) {
 	if len(idxs) == 0 {
 		return
@@ -779,35 +788,131 @@ func placeFiles(idxs []int, rect model.Rect, files *[]model.CityFile) {
 		return (*files)[sorted[i]].Path < (*files)[sorted[j]].Path
 	})
 
-	total := sumFileWeight(sorted, *files)
+	weights := make([]float64, len(sorted))
+	for i, idx := range sorted {
+		weights[i] = fileWeight((*files)[idx])
+	}
+	rects := squarify(weights, rect)
+	for i, idx := range sorted {
+		(*files)[idx].Rect = capAspect(seamInset(rects[i]), maxAspect)
+	}
+}
+
+// squarify tiles rect with one rect per weight, area-proportional and with
+// zero gap or overlap, using the squarify treemap algorithm (Bruls, Huizing &
+// van Wijk, 2000): rows are filled, greedily, along rect's current shorter
+// side for as long as doing so keeps improving the row's worst aspect ratio;
+// once the next item would make it worse, the row is finalized (peeled off
+// the shorter side) and a new row starts in what remains. weights must
+// already be sorted descending -- squarify only forms near-square rows when
+// fed heaviest-first.
+func squarify(weights []float64, rect model.Rect) []model.Rect {
+	out := make([]model.Rect, len(weights))
+	if len(weights) == 0 {
+		return out
+	}
+	total := 0.0
+	for _, w := range weights {
+		total += w
+	}
 	if total <= 0 {
 		total = 1
 	}
-	const density = 0.65
-	scale := rect.W * rect.D * density / total
+	area := rect.W * rect.D
+	areas := make([]float64, len(weights))
+	for i, w := range weights {
+		areas[i] = w / total * area
+	}
 
-	x, z, rowH := rect.X, rect.Z, 0.0
-	for _, idx := range sorted {
-		file := (*files)[idx]
-		area := math.Max(fileWeight(file)*scale, 0.09)
-		aspect := 1/maxAspect + hashFrac(file.Path, "aspect")*(maxAspect-1/maxAspect)
-		side := math.Sqrt(area)
-		w := math.Min(side*math.Sqrt(aspect), rect.W)
-		d := math.Min(side/math.Sqrt(aspect), rect.D)
-
-		if x+w > rect.X+rect.W && x > rect.X {
-			x = rect.X
-			z += rowH
-			rowH = 0
+	remaining := rect
+	var row []int
+	i := 0
+	for i < len(areas) || len(row) > 0 {
+		shortSide := math.Min(remaining.W, remaining.D)
+		if i < len(areas) {
+			candidate := make([]int, len(row)+1)
+			copy(candidate, row)
+			candidate[len(row)] = i
+			if len(row) == 0 || worst(row, areas, shortSide) >= worst(candidate, areas, shortSide) {
+				row = candidate
+				i++
+				continue
+			}
 		}
-		jx := (hashFrac(file.Path, "jx") - 0.5) * 0.3 * w
-		jz := (hashFrac(file.Path, "jz") - 0.5) * 0.3 * d
-		fx := clamp(x+jx, rect.X, rect.X+rect.W-w)
-		fz := clamp(z+jz, rect.Z, rect.Z+rect.D-d)
-		(*files)[idx].Rect = capAspect(model.Rect{X: fx, Z: fz, W: w, D: d}, maxAspect)
+		remaining = layoutRow(row, areas, remaining, out)
+		row = nil
+	}
+	return out
+}
 
-		x += w
-		rowH = math.Max(rowH, d)
+// worst is the closed-form worst-case aspect ratio of laying row's areas out
+// into a strip of the given length, from the squarify paper -- cheaper than
+// actually placing the rects just to measure them.
+func worst(row []int, areas []float64, length float64) float64 {
+	if len(row) == 0 || length <= 0 {
+		return math.Inf(1)
+	}
+	sum, max, min := 0.0, areas[row[0]], areas[row[0]]
+	for _, idx := range row {
+		a := areas[idx]
+		sum += a
+		if a > max {
+			max = a
+		}
+		if a < min {
+			min = a
+		}
+	}
+	if min <= 0 {
+		return math.Inf(1)
+	}
+	l2, s2 := length*length, sum*sum
+	return math.Max(l2*max/s2, s2/(l2*min))
+}
+
+// layoutRow finalizes one squarify row: it spans the full length of
+// remaining's shorter side, with thickness = rowArea / shortSide, and returns
+// what's left of remaining once that strip is peeled off.
+func layoutRow(row []int, areas []float64, remaining model.Rect, out []model.Rect) model.Rect {
+	rowArea := 0.0
+	for _, idx := range row {
+		rowArea += areas[idx]
+	}
+	if remaining.W <= remaining.D {
+		thickness := math.Min(rowArea/math.Max(remaining.W, 1e-9), remaining.D)
+		x := remaining.X
+		for _, idx := range row {
+			w := areas[idx] / math.Max(thickness, 1e-9)
+			out[idx] = model.Rect{X: x, Z: remaining.Z, W: w, D: thickness}
+			x += w
+		}
+		return model.Rect{X: remaining.X, Z: remaining.Z + thickness, W: remaining.W, D: remaining.D - thickness}
+	}
+	thickness := math.Min(rowArea/math.Max(remaining.D, 1e-9), remaining.W)
+	z := remaining.Z
+	for _, idx := range row {
+		d := areas[idx] / math.Max(thickness, 1e-9)
+		out[idx] = model.Rect{X: remaining.X, Z: z, W: thickness, D: d}
+		z += d
+	}
+	return model.Rect{X: remaining.X + thickness, Z: remaining.Z, W: remaining.W - thickness, D: remaining.D}
+}
+
+// fileSeamKeep is the fraction of a squarified file rect's area kept after
+// seamInset; the rest becomes a thin dark gutter between neighboring tiles so
+// they read as separate blocks instead of a seamless slab.
+const fileSeamKeep = 0.875
+
+// seamInset shrinks rect toward its own center by a uniform scale, so exactly
+// fileSeamKeep of its area survives regardless of the rect's aspect ratio.
+func seamInset(rect model.Rect) model.Rect {
+	scale := math.Sqrt(fileSeamKeep)
+	w, d := rect.W*scale, rect.D*scale
+	return model.Rect{
+		X: rect.X + (rect.W-w)/2,
+		Z: rect.Z + (rect.D-d)/2,
+		W: w,
+		D: d,
 	}
 }
 

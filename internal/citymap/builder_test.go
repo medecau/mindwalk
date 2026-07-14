@@ -181,6 +181,56 @@ func TestSmallDirsStayNearSquare(t *testing.T) {
 	}
 }
 
+// TestPlaceFilesNoOverlap pins the fix for a z-fighting bug: the old jittered
+// shelf-packer could push neighboring file footprints into overlap, and two
+// overlapping opaque tiles (same Y span) flicker under the renderer. squarify
+// tiles each cell by construction, so no two file rects should ever overlap,
+// across a tree wide and deep enough to exercise directory splits, the
+// own-files-as-peer path, and bucket overflow recursion alike.
+func TestPlaceFilesNoOverlap(t *testing.T) {
+	root := t.TempDir()
+	for d := 0; d < 8; d++ {
+		dirName := "dir" + string(rune('a'+d))
+		for f := 0; f < 12; f++ {
+			rel := filepath.Join(dirName, "file"+string(rune('a'+f))+".go")
+			// vary size widely (including near the 16-byte floor) so weights
+			// span a realistic, skewed range rather than being near-uniform.
+			size := 1 + (d*37+f*131)%5000
+			writeFile(t, root, rel, strings.Repeat("x", size))
+		}
+	}
+	for f := 0; f < 6; f++ {
+		rel := "loose" + string(rune('a'+f)) + ".go"
+		writeFile(t, root, rel, strings.Repeat("y", 1+f*211))
+	}
+	runGit(t, root, "init")
+	runGit(t, root, "add", ".")
+
+	city, err := (Builder{}).Build(root, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < len(city.Files); i++ {
+		for j := i + 1; j < len(city.Files); j++ {
+			a, b := city.Files[i], city.Files[j]
+			if rectsOverlap(a.Rect, b.Rect) {
+				t.Fatalf("file rects overlap: %s %#v vs %s %#v", a.Path, a.Rect, b.Path, b.Rect)
+			}
+		}
+	}
+}
+
+func rectsOverlap(a, b model.Rect) bool {
+	const eps = 1e-6
+	if a.X+a.W <= b.X+eps || b.X+b.W <= a.X+eps {
+		return false
+	}
+	if a.Z+a.D <= b.Z+eps || b.Z+b.D <= a.Z+eps {
+		return false
+	}
+	return true
+}
+
 func TestLargeTextFileCountsLines(t *testing.T) {
 	root := t.TempDir()
 	const lines = 700000

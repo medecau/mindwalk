@@ -15,7 +15,7 @@ import {
   touchColors
 } from "./sceneUtils";
 import { fireflyTexture } from "./textures";
-import { TrailRenderer } from "./trail";
+import { StreetRenderer } from "./trail";
 
 interface CitySceneProps {
   city?: CityMap;
@@ -48,6 +48,14 @@ const colors: Record<Touch | "unvisited" | "ghost" | "selected", THREE.Color> = 
 };
 
 const TILE_H = 0.14;
+// attention columns sink this far below the tile top instead of butting
+// exactly against it -- two coplanar opaque faces (column base, tile top)
+// would otherwise z-fight. The column's rendered top is unchanged.
+const COLUMN_SINK = 0.05;
+// ground-level street path height: just above the flat tiles, so streets
+// glide over untouched tiles and duck under the taller attention columns of
+// touched files.
+const STREET_Y = TILE_H + 0.02;
 const LABEL_Y = 2.4;
 // the inspector docks on the right; selection pans the camera clear of it
 const INSPECTOR_RESERVED_PX = 348;
@@ -127,7 +135,7 @@ export function CityScene({
   const controlsRef = useRef<OrbitControls | null>(null);
   const sceneRef = useRef<THREE.Scene | null>(null);
   const cityGroupRef = useRef<THREE.Group | null>(null);
-  const trailRef = useRef<TrailRenderer | null>(null);
+  const trailRef = useRef<StreetRenderer | null>(null);
   const fireflyRef = useRef<THREE.Sprite | null>(null);
   const labelSetRef = useRef<DirLabelSet | null>(null);
   const frameRef = useRef<number | null>(null);
@@ -315,14 +323,17 @@ export function CityScene({
           }
           const sx = Math.max(file.rect.w, 0.45) + 0.04;
           const sz = Math.max(file.rect.d, 0.45) + 0.04;
+          // column base sits COLUMN_SINK below the tile top (into the tile,
+          // not on top of it); the top stays at TILE_H + cur, unchanged.
+          const h = Math.max(cur, 0.02) + COLUMN_SINK;
           matrix.compose(
             new THREE.Vector3(
               file.rect.x + file.rect.w / 2 - boundsRef.current.cx,
-              Math.max(cur, 0.02) / 2 + TILE_H,
+              TILE_H - COLUMN_SINK + h / 2,
               file.rect.z + file.rect.d / 2 - boundsRef.current.cz
             ),
             quaternion,
-            new THREE.Vector3(sx, Math.max(cur, 0.02), sz)
+            new THREE.Vector3(sx, h, sz)
           );
           terrain.setMatrixAt(i, matrix);
         }
@@ -384,7 +395,9 @@ export function CityScene({
     const grid = new THREE.GridHelper(size * 2.8, 46, "#20242e", "#1a1e27");
     (grid.material as THREE.Material).transparent = true;
     (grid.material as THREE.Material).opacity = 0.5;
-    grid.position.y = -0.3;
+    // district plates bottom out at y = -0.3; offset the grid so the two
+    // coplanar opaque planes don't z-fight.
+    grid.position.y = -0.31;
     group.add(grid);
 
     const plateDirs = city.dirs.filter((dir) => dir.depth <= 3 && dir.rect.w > 0 && dir.rect.d > 0);
@@ -478,7 +491,7 @@ export function CityScene({
     fireflyRef.current = firefly;
     group.add(firefly);
 
-    const trail = new TrailRenderer(1.4);
+    const trail = new StreetRenderer();
     trailRef.current = trail;
     group.add(trail.object);
 
@@ -606,7 +619,9 @@ export function CityScene({
     ensureVisible(camera, controls, world, canvas.clientWidth, canvas.clientHeight, INSPECTOR_RESERVED_PX);
   }, [city, bounds, selectedPath]);
 
-  // trail: ballistic arcs between recent fixations + the firefly at the head
+  // trail: ground-level street path between recent fixations + the firefly at
+  // the head, still hovering at its attention peak as the "current position"
+  // light -- streets duck under the taller columns of touched files
   useEffect(() => {
     const trail = trailRef.current;
     if (!trail || !city) return;
@@ -649,7 +664,7 @@ export function CityScene({
     trail.update(
       targetFiles.map((file) => {
         const p = centerFor(file, bounds);
-        p.y = peakFor(file) + 0.4;
+        p.y = STREET_Y;
         return p;
       }),
       trailColors
