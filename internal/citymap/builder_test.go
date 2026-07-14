@@ -120,7 +120,7 @@ func TestBuildSkipsWeakMissingTargetsButKeepsStrongGhosts(t *testing.T) {
 	}
 }
 
-func TestSquarifiedLayoutAvoidsExtremeAspectRatios(t *testing.T) {
+func TestLayoutKeepsBlocksNearSquare(t *testing.T) {
 	root := t.TempDir()
 	for i := 0; i < 80; i++ {
 		writeFile(t, root, filepath.Join("pkg", "file"+string(rune('a'+i%26))+string(rune('a'+i/26))+".go"), "package pkg\nfunc X() {}\n")
@@ -140,8 +140,44 @@ func TestSquarifiedLayoutAvoidsExtremeAspectRatios(t *testing.T) {
 		ratio := math.Max(file.Rect.W/file.Rect.D, file.Rect.D/file.Rect.W)
 		maxRatio = math.Max(maxRatio, ratio)
 	}
-	if maxRatio > 25 {
+	if maxRatio > 1.5+1e-6 {
 		t.Fatalf("max aspect ratio = %f", maxRatio)
+	}
+}
+
+// TestSmallDirsStayNearSquare pins the layout's other aspect-ratio backstop:
+// with very few files (too few to fill a shelf row), the near-square bound
+// must hold for both file footprints and the directory plates around them,
+// not just for a crowded directory that naturally packs tightly.
+func TestSmallDirsStayNearSquare(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, root, "pkg/two/a.go", "package two\n")
+	writeFile(t, root, "pkg/two/b.go", "package two\nfunc B() {}\n")
+	writeFile(t, root, "pkg/three/a.go", "package three\n")
+	writeFile(t, root, "pkg/three/b.go", "package three\nfunc B() {}\n")
+	writeFile(t, root, "pkg/three/c.go", "package three\nfunc C() {}\n")
+	runGit(t, root, "init")
+	runGit(t, root, "add", ".")
+
+	city, err := (Builder{}).Build(root, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, file := range city.Files {
+		if file.Rect.W <= 0 || file.Rect.D <= 0 {
+			t.Fatalf("empty rect for %s: %#v", file.Path, file.Rect)
+		}
+		if ratio := math.Max(file.Rect.W/file.Rect.D, file.Rect.D/file.Rect.W); ratio > 1.5+1e-6 {
+			t.Fatalf("file %s aspect ratio = %f", file.Path, ratio)
+		}
+	}
+	for _, dir := range city.Dirs {
+		if dir.Rect.W <= 0 || dir.Rect.D <= 0 {
+			t.Fatalf("empty rect for dir %s: %#v", dir.Path, dir.Rect)
+		}
+		if ratio := math.Max(dir.Rect.W/dir.Rect.D, dir.Rect.D/dir.Rect.W); ratio > 1.5+1e-6 {
+			t.Fatalf("dir %s aspect ratio = %f", dir.Path, ratio)
+		}
 	}
 }
 

@@ -21,8 +21,10 @@ Gotchas:
   server; pick another port and check the log for `bind: address already in use`.
 - Sessions come from `~/.claude/projects` — this machine has real data, no
   fixtures needed. `testdata/claude-session.jsonl` works via `mindwalk open`.
-- `bin/mindwalk map <repo>` (or the `/?map=1&repo=<path>` URL) serves the
-  static citymap with no session.
+- `bin/mindwalk history <repo>` (or the `/?history=1&repo=<path>` URL) replays
+  a repo's git history as a trace against its citymap. This is what backs the
+  Repos sidebar tab; the view loads in "Tree" mode by default, so click the
+  `Terrain` toggle button to see the 3D citymap render.
 
 ## Drive (headless Chrome + CDP, no npm installs)
 
@@ -49,9 +51,9 @@ New-tab endpoint needs PUT: `fetch('http://127.0.0.1:9333/json/new?<url>', {meth
   playback draws the ember trail + firefly.
 - View toggle `Tree` / `Terrain` buttons rebuild the scene — watch for
   `Runtime.exceptionThrown`.
-- `/?map=1&repo=<abs-path>` renders the citymap with no trace and no transport
-  (map-only mode); the HUD `Map` button opens the same URL via `window.open`,
-  so in headless drive the URL directly instead of clicking.
+- `/?history=1&repo=<abs-path>` renders a repo's citymap via its git-history
+  replay (see above); the Repos tab's row click opens the same URL, so in
+  headless drive it directly instead of clicking through the sidebar.
 - `[aria-label="Export video"]` records playback client-side (MediaRecorder →
   webm download): the label flips to `Recording video`, the transport, rail,
   and view toggle lock while recording, and the playhead restores afterwards.

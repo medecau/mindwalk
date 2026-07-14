@@ -407,7 +407,7 @@ export function CityScene({
           new THREE.Vector3(dir.rect.w, height, dir.rect.d)
         );
         plates.setMatrixAt(i, matrix);
-        shade.set("#1a1f29").lerp(new THREE.Color("#252b37"), Math.min(dir.depth, 3) / 3);
+        shade.setHSL(districtHue(dir.path) / 360, 0.22, 0.13 + Math.min(dir.depth, 3) * 0.035);
         plates.setColorAt(i, shade);
       });
       plates.instanceMatrix.needsUpdate = true;
@@ -674,6 +674,18 @@ function attentionColumnGeometry(): THREE.BoxGeometry {
   }
   geo.setAttribute("color", new THREE.BufferAttribute(shade, 3));
   return geo;
+}
+
+// districtHue gives each top-level folder a stable, muted hue so quadrant
+// districts read as distinct at a glance; plate lightness still ramps with
+// depth (see the caller). Same FNV-1a idiom as baseColor's jitter below.
+function districtHue(path: string): number {
+  const top = path.split("/")[0] || path;
+  let h = 2166136261;
+  for (let i = 0; i < top.length; i++) {
+    h = Math.imul(h ^ top.charCodeAt(i), 16777619);
+  }
+  return (h >>> 0) % 360;
 }
 
 function baseColor(file: CityFile): THREE.Color {
