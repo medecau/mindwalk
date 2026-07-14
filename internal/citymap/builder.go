@@ -400,6 +400,18 @@ func computeWeight(n *node, files []model.CityFile) float64 {
 // wherever a rect is finalized, not only on file leaves.
 const maxAspect = 1.5
 
+// quadItem is one thing competing for space under a node's split: either a
+// child directory (recurses via layoutNode) or the node's own loose files
+// (placed directly, no CityDir of its own). Treating both the same way is
+// what lets a node's own files land wherever the burrow bias puts them --
+// one block among peers -- instead of a special, always-central plaza.
+type quadItem struct {
+	dir      *node
+	files    []int
+	weight   float64
+	maxDepth int // 0 for the own-files item; also 0 for a childless dir
+}
+
 func layoutNode(n *node, rect model.Rect, level int, files *[]model.CityFile, dirs *[]model.CityDir) {
 	n.rect = rect
 	if n.path != "" {
@@ -412,155 +424,330 @@ func layoutNode(n *node, rect model.Rect, level int, files *[]model.CityFile, di
 		})
 	}
 
-	children := sortedChildren(n.children)
-	if len(children) == 0 {
-		placeFiles(n.files, rect, files)
-		return
+	items := make([]quadItem, 0, len(n.children)+1)
+	if len(n.files) > 0 {
+		items = append(items, quadItem{files: n.files, weight: sumFileWeight(n.files, *files)})
+	}
+	for _, child := range sortedChildren(n.children) {
+		items = append(items, quadItem{dir: child, weight: child.weight, maxDepth: child.maxDepth})
 	}
 
-	ownWeight := sumFileWeight(n.files, *files)
-	coreFrac := 0.0
-	if n.weight > 0 {
-		coreFrac = clamp(math.Sqrt(ownWeight/n.weight), 0, 0.33)
-	}
-
-	// The root sits at the exact map center: its own cross split is never
-	// jittered, so a repo's loose top-level files land dead center and the
-	// top-level "+" between quadrant districts reads as a crisp, literal
-	// cross. Jitter (and the resulting organic feel) grows with depth.
+	// The root's own split is never jittered, so the top-level "+" between
+	// quadrant districts reads as a crisp, literal cross. Jitter (and the
+	// resulting organic feel) grows with depth.
 	jitter := 0.4
 	if n.path == "" {
 		jitter = 0
 	}
-	core, quadrants := crossSplit(n.path, rect, coreFrac, jitter)
-	if len(n.files) > 0 {
-		placeFiles(n.files, capAspect(core, maxAspect), files)
-	}
-	layoutQuadrants(children, quadrants, level+1, n.path, files, dirs)
+	layoutItems(items, rect, level, n.path, jitter, files, dirs)
 }
 
-// layoutQuadrants buckets dirs into at most four groups by weight (Longest
-// Processing Time bin-packing), assigns each group a quadrant of rect biased
-// by weight and depth ("burrow" districts land in the corners farthest from
-// the map's origin), and recurses. A group holding more than one dir did not
-// fit the four-quadrant cross cleanly -- it re-runs the same cross primitive
-// inside its quadrant (quadtree overflow) rather than getting its own plate.
-func layoutQuadrants(children []*node, quadrants [4]model.Rect, level int, saltPath string, files *[]model.CityFile, dirs *[]model.CityDir) {
-	buckets := bucketChildren(children)
-	assigned := assignQuadrants(quadrants, buckets)
-	gutter := streetGutter(level)
-	for b, bucket := range buckets {
-		if len(bucket) == 0 {
-			continue // empty quadrant stays a bare plaza
-		}
-		placed := capAspect(inset(quadrants[assigned[b]], gutter), maxAspect)
+// layoutItems places a node's own files (if any) and its child dirs as
+// siblings competing for the same cell: it buckets them into at most four
+// groups by weight (Longest Processing Time bin-packing), then sizes and
+// positions exactly one contiguous cell per bucket so they fully tile rect
+// -- never leaving a cell reserved for nothing. Position is biased by depth
+// (the deepest bucket gets the side farthest from the map's global origin)
+// while size is biased by weight (heavier buckets get more room), so the
+// two pulls don't fight. A node's own loose files are always depth 0, so
+// bucketItems ranks them last and layoutBuckets carves their cell out last
+// too -- see layoutAroundCore -- landing them as a small block next to their
+// siblings rather than a special centered plaza. A bucket holding more than
+// one item did not fit cleanly and re-runs this same primitive inside its
+// own cell (quadtree overflow).
+func layoutItems(items []quadItem, rect model.Rect, level int, saltPath string, jitter float64, files *[]model.CityFile, dirs *[]model.CityDir) {
+	if len(items) == 0 {
+		return
+	}
+	if len(items) == 1 {
+		placeItem(items[0], rect, level, files, dirs)
+		return
+	}
+
+	buckets := bucketItems(items) // sorted deepest first, weight breaks ties
+	cells := layoutBuckets(saltPath, rect, buckets, jitter)
+	gutter := streetGutter(level + 1)
+
+	for i, bucket := range buckets {
+		placed := capAspect(inset(cells[i], gutter), maxAspect)
 		if len(bucket) == 1 {
-			layoutNode(bucket[0], placed, level, files, dirs)
+			placeItem(bucket[0], placed, level+1, files, dirs)
 			continue
 		}
-		subSalt := saltPath + "#" + strconv.Itoa(b)
-		_, subQuadrants := crossSplit(subSalt, placed, 0, 0.4)
-		layoutQuadrants(bucket, subQuadrants, level+1, subSalt, files, dirs)
+		subSalt := saltPath + "#" + strconv.Itoa(i)
+		layoutItems(bucket, placed, level+1, subSalt, 0.4, files, dirs)
 	}
 }
 
-// crossSplit divides rect with a "+" through a weighted, hash-jittered point
-// near its center, carving an optional central core (for a node's own loose
-// files) out of the crossing so the four quadrants never touch it directly.
-// The gap this leaves -- between core and quadrants, and between quadrants
-// once inset shrinks them further -- is what reads as streets.
-func crossSplit(saltPath string, rect model.Rect, coreFrac, jitterAmp float64) (model.Rect, [4]model.Rect) {
-	fx := clamp(0.5+(hashFrac(saltPath, "x")-0.5)*jitterAmp, 0.3, 0.7)
-	fy := clamp(0.5+(hashFrac(saltPath, "y")-0.5)*jitterAmp, 0.3, 0.7)
-	splitX := rect.X + rect.W*fx
-	splitZ := rect.Z + rect.D*fy
-
-	coreHalfW := clamp(rect.W*coreFrac/2, 0, math.Min(splitX-rect.X, rect.X+rect.W-splitX)*0.9)
-	coreHalfD := clamp(rect.D*coreFrac/2, 0, math.Min(splitZ-rect.Z, rect.Z+rect.D-splitZ)*0.9)
-
-	core := model.Rect{X: splitX - coreHalfW, Z: splitZ - coreHalfD, W: coreHalfW * 2, D: coreHalfD * 2}
-	quadrants := [4]model.Rect{
-		{X: rect.X, Z: rect.Z, W: (splitX - coreHalfW) - rect.X, D: (splitZ - coreHalfD) - rect.Z},
-		{X: splitX + coreHalfW, Z: rect.Z, W: (rect.X + rect.W) - (splitX + coreHalfW), D: (splitZ - coreHalfD) - rect.Z},
-		{X: rect.X, Z: splitZ + coreHalfD, W: (splitX - coreHalfW) - rect.X, D: (rect.Z + rect.D) - (splitZ + coreHalfD)},
-		{X: splitX + coreHalfW, Z: splitZ + coreHalfD, W: (rect.X + rect.W) - (splitX + coreHalfW), D: (rect.Z + rect.D) - (splitZ + coreHalfD)},
+func placeItem(item quadItem, rect model.Rect, level int, files *[]model.CityFile, dirs *[]model.CityDir) {
+	if item.dir != nil {
+		layoutNode(item.dir, rect, level, files, dirs)
+		return
 	}
-	return core, quadrants
+	placeFiles(item.files, rect, files)
 }
 
-// bucketChildren packs dirs into exactly four buckets via Longest Processing
-// Time: sorted by descending weight (name breaks ties), each dir goes to the
-// currently lightest bucket. Four or fewer dirs always land one per bucket;
-// more than four forces at least one bucket to hold multiple dirs.
-func bucketChildren(children []*node) [4][]*node {
-	sorted := make([]*node, len(children))
-	copy(sorted, children)
+// bucketItems packs a node's child dirs into buckets via Longest Processing
+// Time (sorted by descending weight, name breaks ties; each dir goes to the
+// currently lightest bucket), then re-sorts the buckets by depth, deepest
+// first (weight only breaks ties): position is a depth question, not a
+// weight one -- a bucket's cell grows toward its own far corner as its
+// weight share grows regardless of which corner it was assigned, so ranking
+// by weight would fight the very growth it causes.
+//
+// A node's own loose files, if present, are pulled out before LPT runs and
+// always get their own trailing bucket rather than competing for one of the
+// (up to) four slots: merging them into an LPT bucket alongside a deeper
+// child dir would raise that bucket's depth, defeating the deepest-first
+// sort below even though the files themselves are always depth 0. Dirs
+// still get one fewer slot to share when own-files claims one, so five or
+// more child dirs now overflow into a shared bucket the same way four or
+// more always did.
+func bucketItems(items []quadItem) [][]quadItem {
+	var own *quadItem
+	dirs := make([]quadItem, 0, len(items))
+	for i := range items {
+		if items[i].dir == nil {
+			it := items[i]
+			own = &it
+			continue
+		}
+		dirs = append(dirs, items[i])
+	}
+
+	slots := 4
+	if own != nil {
+		slots = 3
+	}
+
+	sorted := make([]quadItem, len(dirs))
+	copy(sorted, dirs)
 	sort.SliceStable(sorted, func(i, j int) bool {
 		if sorted[i].weight != sorted[j].weight {
 			return sorted[i].weight > sorted[j].weight
 		}
-		return sorted[i].name < sorted[j].name
+		return itemKey(sorted[i]) < itemKey(sorted[j])
 	})
-	var buckets [4][]*node
-	var weights [4]float64
-	for _, c := range sorted {
-		lightest := 0
-		for i := 1; i < 4; i++ {
-			if weights[i] < weights[lightest] {
-				lightest = i
-			}
-		}
-		buckets[lightest] = append(buckets[lightest], c)
-		weights[lightest] += c.weight
+	n := len(sorted)
+	if n > slots {
+		n = slots
 	}
+	var buckets [][]quadItem
+	if n > 0 {
+		buckets = make([][]quadItem, n)
+		bucketWeight := make([]float64, n)
+		for _, it := range sorted {
+			lightest := 0
+			for i := 1; i < n; i++ {
+				if bucketWeight[i] < bucketWeight[lightest] {
+					lightest = i
+				}
+			}
+			buckets[lightest] = append(buckets[lightest], it)
+			bucketWeight[lightest] += it.weight
+		}
+	}
+	if own != nil {
+		buckets = append(buckets, []quadItem{*own})
+	}
+
+	sort.SliceStable(buckets, func(i, j int) bool {
+		wi, di := scoreItems(buckets[i])
+		wj, dj := scoreItems(buckets[j])
+		if di != dj {
+			return di > dj
+		}
+		if wi != wj {
+			return wi > wj
+		}
+		return itemKey(buckets[i][0]) < itemKey(buckets[j][0])
+	})
 	return buckets
 }
 
-// assignQuadrants pairs the bucket with the highest weight*depth score --
-// the heaviest, most deeply nested subtree -- with the quadrant farthest
-// from the map's origin, and so on down. Applying this rule at every
-// recursion level consistently pushes deep, file-heavy districts toward the
-// outer corners of the whole map, not just of their immediate parent cell.
-func assignQuadrants(quadrants [4]model.Rect, buckets [4][]*node) [4]int {
-	type ranked struct {
-		idx int
-		key float64
+func itemKey(item quadItem) string {
+	if item.dir != nil {
+		return item.dir.name
 	}
-	byQuadrant := make([]ranked, 4)
-	for i, q := range quadrants {
-		cx := q.X + q.W/2
-		cz := q.Z + q.D/2
-		byQuadrant[i] = ranked{i, cx*cx + cz*cz}
-	}
-	sort.SliceStable(byQuadrant, func(i, j int) bool { return byQuadrant[i].key > byQuadrant[j].key })
-
-	byBucket := make([]ranked, 4)
-	for i, b := range buckets {
-		weight, depth := scoreBucket(b)
-		byBucket[i] = ranked{i, weight * (1 + float64(depth))}
-	}
-	sort.SliceStable(byBucket, func(i, j int) bool {
-		if byBucket[i].key != byBucket[j].key {
-			return byBucket[i].key > byBucket[j].key
-		}
-		return byBucket[i].idx < byBucket[j].idx
-	})
-
-	var assigned [4]int
-	for slot := 0; slot < 4; slot++ {
-		assigned[byBucket[slot].idx] = byQuadrant[slot].idx
-	}
-	return assigned
+	return ""
 }
 
-func scoreBucket(bucket []*node) (weight float64, maxDepth int) {
-	for _, c := range bucket {
-		weight += c.weight
-		if c.maxDepth > maxDepth {
-			maxDepth = c.maxDepth
+func scoreItems(items []quadItem) (weight float64, maxDepth int) {
+	for _, it := range items {
+		weight += it.weight
+		if it.maxDepth > maxDepth {
+			maxDepth = it.maxDepth
 		}
 	}
 	return weight, maxDepth
+}
+
+// layoutBuckets sizes and positions one contiguous cell per bucket, in the
+// same order: buckets is sorted deepest first (bucketItems' contract), so
+// index order alone decides which side of each split is "outward" (farthest
+// from the map's global origin) versus "inward". Size, in contrast, is
+// weight-proportional: a bucket's share of the split grows with its own
+// weight regardless of which side it landed on. len==4 is the literal "+"
+// cross; fewer buckets degrade to fewer splits so cells never sit empty.
+//
+// A node's own files, when present, skip this and go through
+// layoutAroundCore instead: they are always ranked last (shallowest), and a
+// quadrant corner still gives its occupant a full outer edge of the map, so
+// the corner closest to center is not actually close to center. Peeling
+// buckets off one at a time gives the final (own-files) remainder interior
+// edges on every side but one.
+func layoutBuckets(saltPath string, rect model.Rect, buckets [][]quadItem, jitterAmp float64) []model.Rect {
+	if ownIdx := ownFilesIndex(buckets); ownIdx >= 0 {
+		return layoutAroundCore(saltPath, rect, buckets, ownIdx, jitterAmp)
+	}
+
+	weights := make([]float64, len(buckets))
+	for i, b := range buckets {
+		weights[i], _ = scoreItems(b)
+	}
+	switch len(weights) {
+	case 1:
+		return []model.Rect{rect}
+	case 2:
+		return splitTwo(saltPath, rect, weights[0], weights[1], jitterAmp)
+	case 3:
+		head := splitTwo(saltPath, rect, weights[0], weights[1]+weights[2], jitterAmp)
+		tail := splitTwo(saltPath+"#r", head[1], weights[1], weights[2], jitterAmp)
+		return []model.Rect{head[0], tail[0], tail[1]}
+	default:
+		return splitFour(saltPath, rect, weights, jitterAmp)
+	}
+}
+
+func ownFilesIndex(buckets [][]quadItem) int {
+	for i, b := range buckets {
+		if len(b) == 1 && b[0].dir == nil {
+			return i
+		}
+	}
+	return -1
+}
+
+// layoutAroundCore peels sibling buckets off the rect one at a time, deepest
+// first, each via splitTwo: every peel claims one outer edge of whatever
+// region remains and leaves the rest one edge shorter. What's left once every
+// sibling is peeled — the own-files bucket — therefore touches at most one of
+// the original rect's outer edges instead of a full one, landing it as a
+// small, largely interior cell next to its siblings rather than a corner
+// wedge sharing two outer edges with the map itself.
+func layoutAroundCore(saltPath string, rect model.Rect, buckets [][]quadItem, ownIdx int, jitterAmp float64) []model.Rect {
+	remainingWeight := 0.0
+	for _, b := range buckets {
+		w, _ := scoreItems(b)
+		remainingWeight += w
+	}
+
+	cells := make([]model.Rect, len(buckets))
+	remaining := rect
+	peel := 0
+	for i, b := range buckets {
+		if i == ownIdx {
+			continue
+		}
+		outWeight, _ := scoreItems(b)
+		remainingWeight -= outWeight
+		pieces := splitTwo(saltPath+"#p"+strconv.Itoa(peel), remaining, outWeight, remainingWeight, jitterAmp)
+		cells[i] = pieces[0]
+		remaining = pieces[1]
+		peel++
+	}
+	cells[ownIdx] = remaining
+	return cells
+}
+
+// farness ranks a point by squared distance from the map's global origin --
+// used to decide, before any size is chosen, which half of a split sits
+// farther out, so a heavy bucket can be pointed at that half and then sized
+// by its own weight rather than the two decisions fighting each other.
+func farness(x, z float64) float64 { return x*x + z*z }
+
+// splitTwo divides rect in two along its longer dimension (keeping both
+// pieces closer to square) at a point blending the outward piece's weight
+// share with a small hash jitter. It always returns [outward, inward], so
+// the caller's heaviest-first weight order maps directly onto "farther from
+// the center first."
+func splitTwo(saltPath string, rect model.Rect, outWeight, inWeight, jitterAmp float64) []model.Rect {
+	share := outWeight / math.Max(outWeight+inWeight, 1e-9)
+	f := clamp(share+(hashFrac(saltPath, "s")-0.5)*jitterAmp, 0.15, 0.85)
+
+	if rect.W >= rect.D {
+		outward := farness(rect.X, rect.Z+rect.D/2) >= farness(rect.X+rect.W, rect.Z+rect.D/2)
+		frac := f
+		if !outward {
+			frac = 1 - f
+		}
+		splitX := rect.X + rect.W*frac
+		lo := model.Rect{X: rect.X, Z: rect.Z, W: splitX - rect.X, D: rect.D}
+		hi := model.Rect{X: splitX, Z: rect.Z, W: (rect.X + rect.W) - splitX, D: rect.D}
+		if outward {
+			return []model.Rect{lo, hi}
+		}
+		return []model.Rect{hi, lo}
+	}
+	outward := farness(rect.X+rect.W/2, rect.Z) >= farness(rect.X+rect.W/2, rect.Z+rect.D)
+	frac := f
+	if !outward {
+		frac = 1 - f
+	}
+	splitZ := rect.Z + rect.D*frac
+	lo := model.Rect{X: rect.X, Z: rect.Z, W: rect.W, D: splitZ - rect.Z}
+	hi := model.Rect{X: rect.X, Z: splitZ, W: rect.W, D: (rect.Z + rect.D) - splitZ}
+	if outward {
+		return []model.Rect{lo, hi}
+	}
+	return []model.Rect{hi, lo}
+}
+
+// splitFour is the literal "+" cross: rect's four corners have a fixed
+// farness ranking independent of where the cross falls, so that ranking
+// decides which of the (already weight-sorted) buckets lands in which
+// corner; only then does each axis split at a point weighted by the
+// resulting left/right and top/bottom weight shares, plus a small hash
+// jitter.
+func splitFour(saltPath string, rect model.Rect, weights []float64, jitterAmp float64) []model.Rect {
+	type slot struct {
+		idx int // 0=TL 1=TR 2=BL 3=BR
+		key float64
+	}
+	corners := [4][2]float64{
+		{rect.X, rect.Z},
+		{rect.X + rect.W, rect.Z},
+		{rect.X, rect.Z + rect.D},
+		{rect.X + rect.W, rect.Z + rect.D},
+	}
+	slots := make([]slot, 4)
+	for i, c := range corners {
+		slots[i] = slot{i, farness(c[0], c[1])}
+	}
+	sort.SliceStable(slots, func(i, j int) bool { return slots[i].key > slots[j].key })
+
+	var weightBySlot [4]float64
+	for rank, s := range slots {
+		weightBySlot[s.idx] = weights[rank]
+	}
+	left, right := weightBySlot[0]+weightBySlot[2], weightBySlot[1]+weightBySlot[3]
+	top, bottom := weightBySlot[0]+weightBySlot[1], weightBySlot[2]+weightBySlot[3]
+	fx := clamp(left/math.Max(left+right, 1e-9)+(hashFrac(saltPath, "x")-0.5)*jitterAmp, 0.15, 0.85)
+	fy := clamp(top/math.Max(top+bottom, 1e-9)+(hashFrac(saltPath, "y")-0.5)*jitterAmp, 0.15, 0.85)
+	splitX := rect.X + rect.W*fx
+	splitZ := rect.Z + rect.D*fy
+
+	cellBySlot := [4]model.Rect{
+		{X: rect.X, Z: rect.Z, W: splitX - rect.X, D: splitZ - rect.Z},
+		{X: splitX, Z: rect.Z, W: (rect.X + rect.W) - splitX, D: splitZ - rect.Z},
+		{X: rect.X, Z: splitZ, W: splitX - rect.X, D: (rect.Z + rect.D) - splitZ},
+		{X: splitX, Z: splitZ, W: (rect.X + rect.W) - splitX, D: (rect.Z + rect.D) - splitZ},
+	}
+	cells := make([]model.Rect, 4)
+	for rank, s := range slots {
+		cells[rank] = cellBySlot[s.idx]
+	}
+	return cells
 }
 
 func sumFileWeight(idxs []int, files []model.CityFile) float64 {
