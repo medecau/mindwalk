@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef } from "react";
 import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
-import { touchWord, type CityFile, type CityMap, type Touch } from "../types";
+import { touchWord, type CityFile, type CityMap, type Rect, type Touch } from "../types";
 import type { FilePlayback } from "../playback/reducer";
 import { DirLabelSet } from "./dirLabels";
 import {
@@ -14,8 +14,9 @@ import {
   SKY,
   touchColors
 } from "./sceneUtils";
+import { buildStreetGraph, routeStreet, type StreetGraph } from "./streetGraph";
 import { fireflyTexture } from "./textures";
-import { StreetRenderer } from "./trail";
+import { StreetRenderer, type StreetPath } from "./trail";
 
 interface CitySceneProps {
   city?: CityMap;
@@ -80,11 +81,11 @@ function attentionGlow(touch: Touch, visits: number): number {
 
 // static map height: normalized lines of code, log-scaled so a few huge files
 // don't flatten everything else. maxLog is log2(largest file's lines).
-const LOC_MIN_H = 0.35;
-const LOC_MAX_H = 2.4;
+const LOC_MIN_H = 0.4;
+const LOC_MAX_H = 5.5;
 // gamma > 1 exaggerates the top end: small files stay low, big files spike, so
 // the skyline reads as a city (towers vs shacks) instead of a uniform plateau
-const LOC_HEIGHT_GAMMA = 2.2;
+const LOC_HEIGHT_GAMMA = 1.8;
 // normalized 0..1 position of a file by lines of code (log-scaled)
 function locFraction(lines: number, maxLog: number): number {
   if (maxLog <= 0) return 0;
@@ -149,6 +150,9 @@ export function CityScene({
   const sceneRef = useRef<THREE.Scene | null>(null);
   const cityGroupRef = useRef<THREE.Group | null>(null);
   const trailRef = useRef<StreetRenderer | null>(null);
+  // cache of routed hops, keyed "fromId>toId" -- the recent-targets window
+  // slides by one each tick, so this memoizes every hop but the newest
+  const routeCacheRef = useRef(new Map<string, THREE.Vector3[]>());
   const fireflyRef = useRef<THREE.Sprite | null>(null);
   const labelSetRef = useRef<DirLabelSet | null>(null);
   const frameRef = useRef<number | null>(null);
@@ -200,6 +204,14 @@ export function CityScene({
     }
     return Math.log2(maxLines);
   }, [city]);
+
+  // nav-grid over the citymap's gutters, built once per city; null for
+  // pathological maps (cell count over the cap), in which case every hop
+  // falls back to the direct L-bend
+  const streetGraph: StreetGraph | null = useMemo(
+    () => (city ? buildStreetGraph(city.files) : null),
+    [city]
+  );
 
   useEffect(() => {
     const host = hostRef.current;
@@ -406,6 +418,7 @@ export function CityScene({
     slotsRef.current = [];
     heightsRef.current = new Map();
     boundsRef.current = bounds;
+    routeCacheRef.current = new Map();
     if (!city || city.files.length === 0) return;
 
     const group = new THREE.Group();
@@ -687,7 +700,6 @@ export function CityScene({
         source: target.source
       }))
       .filter((entry): entry is { file: CityFile; source: number } => Boolean(entry.file));
-    const targetFiles = recent.map((entry) => entry.file);
 
     const peakFor = (file: CityFile): number => {
       const touch = playback.touchByFile.get(file.id);
@@ -710,18 +722,29 @@ export function CityScene({
       }
     }
 
-    const trailColors = sessionColors
-      ? recent.map((entry) => sessionColors[entry.source] ?? sessionColors[0] ?? EMBER)
-      : undefined;
-    trail.update(
-      targetFiles.map((file) => {
-        const p = centerFor(file, bounds);
-        p.y = STREET_Y;
-        return p;
-      }),
-      trailColors
-    );
-  }, [city, playback, bounds, sessionColors, staticMaxLog]);
+    const cache = routeCacheRef.current;
+    const hopPoints = (a: CityFile, b: CityFile): THREE.Vector3[] => {
+      const key = `${a.id}>${b.id}`;
+      const cached = cache.get(key);
+      if (cached) return cached;
+      const routed = routeStreet(streetGraph, a.rect, b.rect) ?? bendPoints(a.rect, b.rect, a.id);
+      const world = routed.map((pt) => new THREE.Vector3(pt.x - bounds.cx, STREET_Y, pt.z - bounds.cz));
+      cache.set(key, world);
+      return world;
+    };
+
+    const hops = recent.length - 1;
+    const paths: StreetPath[] = [];
+    for (let i = 1; i < recent.length; i++) {
+      const recency = i / hops;
+      const base = sessionColors ? sessionColors[recent[i].source] ?? sessionColors[0] ?? EMBER : EMBER;
+      paths.push({
+        points: hopPoints(recent[i - 1].file, recent[i].file),
+        color: base.clone().multiplyScalar(0.05 + 0.95 * recency * recency)
+      });
+    }
+    trail.update(paths);
+  }, [city, playback, bounds, sessionColors, staticMaxLog, streetGraph]);
 
   return <div className="city-scene" ref={hostRef} aria-label="Attention terrain" />;
 }
@@ -767,6 +790,25 @@ function baseColor(file: CityFile): THREE.Color {
 
 function centerFor(file: CityFile, bounds: { cx: number; cz: number }): THREE.Vector3 {
   return new THREE.Vector3(file.rect.x + file.rect.w / 2 - bounds.cx, 0, file.rect.z + file.rect.d / 2 - bounds.cz);
+}
+
+// fallback for when routeStreet can't find a gutter path (graph too large,
+// or start/goal share a cell): the old center-to-center Manhattan L. Corner
+// alternates by parity so consecutive fallback hops don't all kink the same
+// way; parityId is stable per pair (the source file's id) rather than the
+// hop's position in the window, so the cached route doesn't flip-flop as the
+// window slides.
+function bendPoints(a: Rect, b: Rect, parityId: number): { x: number; z: number }[] {
+  const ax = a.x + a.w / 2;
+  const az = a.z + a.d / 2;
+  const bx = b.x + b.w / 2;
+  const bz = b.z + b.d / 2;
+  const corner = parityId % 2 === 0 ? { x: bx, z: az } : { x: ax, z: bz };
+  return [
+    { x: ax, z: az },
+    corner,
+    { x: bx, z: bz }
+  ];
 }
 
 function dirBasename(path: string): string {

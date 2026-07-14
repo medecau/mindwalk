@@ -89,31 +89,39 @@ export class TrailRenderer {
   }
 }
 
-const SEGMENTS_PER_PATH = 2; // Manhattan L: start -> corner -> end
-const MAX_PATHS = 11; // playback keeps 12 recent targets → at most 11 paths
+// upper bound on total rendered segments across all hops; simplified routes
+// keep segment counts modest, so real playback stays well under this
+const MAX_SEGMENTS = 512;
 // street width in CSS pixels (worldUnits: false) -- LineBasicMaterial caps
 // linewidth at 1px on WebGL everywhere but macOS/ANGLE, so fat lines need the
 // instanced-quad approach (LineSegments2 + LineMaterial) to render reliably.
 const STREET_LINEWIDTH = 2.6;
 
+export interface StreetPath {
+  // a routed (or L-bend fallback) polyline in world space, oldest-to-newest
+  // endpoint, y already at street level
+  points: THREE.Vector3[];
+  // this hop's recency-faded color; every segment of the hop shares it
+  color: THREE.Color;
+}
+
 // Fixed-capacity street renderer for CityScene's flat quadtree grid: ground-
-// hugging orthogonal (Manhattan) paths between consecutively touched files,
-// in place of TrailRenderer's flying arcs. Same recency fade and additive
-// blending as TrailRenderer above, but built on the fat-line instanced-quad
-// path (LineSegments2) instead of plain LineSegments, since a 1px-capped
-// street reads as a hairline seam and z-fights with the tiles it rides over.
+// hugging routed paths that thread the gutters between consecutively touched
+// files, in place of TrailRenderer's flying arcs. Same recency fade and
+// additive blending as TrailRenderer above, but built on the fat-line
+// instanced-quad path (LineSegments2) instead of plain LineSegments, since a
+// 1px-capped street reads as a hairline seam and z-fights with the tiles it
+// rides over.
 export class StreetRenderer {
   readonly object: LineSegments2;
   private readonly geometry: LineSegmentsGeometry;
   private readonly material: LineMaterial;
-  private readonly corner = new THREE.Vector3();
-  private readonly color = new THREE.Color();
-  // scratch buffers sized for MAX_PATHS; each update() writes a prefix and
+  // scratch buffers sized for MAX_SEGMENTS; each update() writes a prefix and
   // hands setPositions/setColors a subarray view over just that prefix, so no
   // per-tick allocation beyond the (tiny) InstancedInterleavedBuffer wrapper
   // setPositions/setColors themselves construct.
-  private readonly positions = new Float32Array(MAX_PATHS * SEGMENTS_PER_PATH * 6);
-  private readonly colors = new Float32Array(MAX_PATHS * SEGMENTS_PER_PATH * 6);
+  private readonly positions = new Float32Array(MAX_SEGMENTS * 6);
+  private readonly colors = new Float32Array(MAX_SEGMENTS * 6);
 
   constructor() {
     this.geometry = new LineSegmentsGeometry();
@@ -138,54 +146,47 @@ export class StreetRenderer {
     this.material.resolution.set(width, height);
   }
 
-  // points are the recent fixations, oldest first, y already at street level.
-  // colors, when given, is aligned to points and tints each street segment by
-  // the session that produced its newer endpoint; omit it for a single
-  // ember-colored walker.
-  update(points: THREE.Vector3[], colors?: THREE.Color[]) {
-    const paths = Math.min(Math.max(points.length - 1, 0), MAX_PATHS);
-    if (paths === 0) {
+  // paths are the recent hops, oldest first, each a routed polyline with its
+  // own recency color. If the total segment count exceeds MAX_SEGMENTS,
+  // oldest hops are dropped first -- mirrors the old "keep the newest paths".
+  update(paths: StreetPath[]) {
+    let firstIdx = paths.length;
+    let total = 0;
+    for (let i = paths.length - 1; i >= 0; i--) {
+      const segs = Math.max(paths[i].points.length - 1, 0);
+      if (total + segs > MAX_SEGMENTS) break;
+      total += segs;
+      firstIdx = i;
+    }
+    if (total === 0) {
       this.object.visible = false;
       return;
     }
-    const start = points.length - 1 - paths;
     let v = 0;
-    for (let i = 1; i <= paths; i++) {
-      const idx = start + i;
-      const a = points[idx - 1];
-      const b = points[idx];
-      // alternate the bend corner by index parity so consecutive streets
-      // don't all kink the same way -- reads as a street grid, not one hallway
-      if (idx % 2 === 0) {
-        this.corner.set(b.x, a.y, a.z);
-      } else {
-        this.corner.set(a.x, a.y, b.z);
+    for (let i = firstIdx; i < paths.length; i++) {
+      const { points, color } = paths[i];
+      for (let s = 0; s < points.length - 1; s++) {
+        v = this.writeSegment(v, points[s], points[s + 1], color);
       }
-      const recency = i / paths;
-      const base = colors?.[idx] ?? EMBER;
-      this.color.copy(base).multiplyScalar(0.05 + 0.95 * recency * recency);
-
-      v = this.writeSegment(v, a, this.corner);
-      v = this.writeSegment(v, this.corner, b);
     }
     this.geometry.setPositions(this.positions.subarray(0, v));
     this.geometry.setColors(this.colors.subarray(0, v));
     this.object.visible = true;
   }
 
-  private writeSegment(v: number, a: THREE.Vector3, b: THREE.Vector3): number {
+  private writeSegment(v: number, a: THREE.Vector3, b: THREE.Vector3, color: THREE.Color): number {
     this.positions[v] = a.x;
     this.positions[v + 1] = a.y;
     this.positions[v + 2] = a.z;
     this.positions[v + 3] = b.x;
     this.positions[v + 4] = b.y;
     this.positions[v + 5] = b.z;
-    this.colors[v] = this.color.r;
-    this.colors[v + 1] = this.color.g;
-    this.colors[v + 2] = this.color.b;
-    this.colors[v + 3] = this.color.r;
-    this.colors[v + 4] = this.color.g;
-    this.colors[v + 5] = this.color.b;
+    this.colors[v] = color.r;
+    this.colors[v + 1] = color.g;
+    this.colors[v + 2] = color.b;
+    this.colors[v + 3] = color.r;
+    this.colors[v + 4] = color.g;
+    this.colors[v + 5] = color.b;
     return v + 6;
   }
 }
