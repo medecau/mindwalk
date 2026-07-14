@@ -478,118 +478,65 @@ func TestServerSkipsCodexSubagentSessions(t *testing.T) {
 	}
 }
 
-func TestRepoMapServesCitymapWithoutSession(t *testing.T) {
-	repoRoot := t.TempDir()
-	if err := os.WriteFile(filepath.Join(repoRoot, "a.go"), []byte("package demo\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(repoRoot, "b.go"), []byte("package demo\n\nfunc B() {}\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+func TestReposListsGitReposFromTraces(t *testing.T) {
+	claudeDir := t.TempDir()
+	repo := initGitRepo(t)
+	nonRepo := t.TempDir()
 
-	s := New(Config{RepoRoot: repoRoot, MapOnly: true})
+	writeServerSession(t, filepath.Join(claudeDir, "a.jsonl"),
+		`{"type":"user","timestamp":"2026-07-09T00:00:00Z","sessionId":"sess-a","cwd":`+quoteJSON(repo)+`,"message":{"role":"user","content":"hi"}}`,
+	)
+	writeServerSession(t, filepath.Join(claudeDir, "b.jsonl"),
+		`{"type":"user","timestamp":"2026-07-09T00:00:00Z","sessionId":"sess-b","cwd":`+quoteJSON(nonRepo)+`,"message":{"role":"user","content":"hi"}}`,
+	)
+
+	s := New(Config{ClaudeDir: claudeDir, CodexDir: filepath.Join(t.TempDir(), "codex")})
 	resp := httptest.NewRecorder()
-	s.handleRepoMap(resp, httptest.NewRequest(http.MethodGet, "/api/repomap", nil))
+	s.handleRepos(resp, httptest.NewRequest(http.MethodGet, "/api/repos", nil))
 	if resp.Code != http.StatusOK {
-		t.Fatalf("repomap status = %d body=%s", resp.Code, resp.Body.String())
+		t.Fatalf("repos status = %d body=%s", resp.Code, resp.Body.String())
 	}
-	var city model.CityMap
-	if err := json.Unmarshal(resp.Body.Bytes(), &city); err != nil {
+	var repos []model.RepoInfo
+	if err := json.Unmarshal(resp.Body.Bytes(), &repos); err != nil {
 		t.Fatal(err)
 	}
-	if len(city.Files) != 2 || city.Repo.Root == "" {
-		t.Fatalf("city = %#v", city)
+	// the non-repo cwd forms a project but must be filtered out of the repos list
+	if len(repos) != 1 {
+		t.Fatalf("repos = %#v, want 1 (non-repo cwd excluded)", repos)
 	}
-
-	// A second request returns the cached build.
-	if _, err := s.repoCityMap(repoRoot); err != nil {
-		t.Fatal(err)
+	if repos[0].Path != filepath.Clean(repo) {
+		t.Fatalf("repo path = %q, want %q", repos[0].Path, filepath.Clean(repo))
+	}
+	if repos[0].Key != projectKey(repo) {
+		t.Fatalf("repo key = %q, want %q", repos[0].Key, projectKey(repo))
+	}
+	if repos[0].Commit == "" {
+		t.Fatalf("repo commit missing: %#v", repos[0])
 	}
 }
 
-func TestRepoMapAcceptsRepoQueryParam(t *testing.T) {
-	repoRoot := t.TempDir()
-	if err := os.WriteFile(filepath.Join(repoRoot, "a.go"), []byte("package demo\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	// No RepoRoot configured; the repo comes entirely from the query param.
+func TestReposRepoParamValidates(t *testing.T) {
+	repo := initGitRepo(t)
+	nonRepo := t.TempDir()
 	s := New(Config{})
-	resp := httptest.NewRecorder()
-	s.handleRepoMap(resp, httptest.NewRequest(http.MethodGet, "/api/repomap?repo="+url.QueryEscape(repoRoot), nil))
-	if resp.Code != http.StatusOK {
-		t.Fatalf("repomap status = %d body=%s", resp.Code, resp.Body.String())
+
+	ok := httptest.NewRecorder()
+	s.handleRepos(ok, httptest.NewRequest(http.MethodGet, "/api/repos?repo="+url.QueryEscape(repo), nil))
+	if ok.Code != http.StatusOK {
+		t.Fatalf("repos?repo=<gitrepo> status = %d, want 200", ok.Code)
 	}
-	var city model.CityMap
-	if err := json.Unmarshal(resp.Body.Bytes(), &city); err != nil {
+	var repos []model.RepoInfo
+	if err := json.Unmarshal(ok.Body.Bytes(), &repos); err != nil {
 		t.Fatal(err)
 	}
-	if len(city.Files) != 1 {
-		t.Fatalf("city = %#v", city)
-	}
-}
-
-func TestRepoMapWithoutRepoRootReturns404(t *testing.T) {
-	s := New(Config{})
-	resp := httptest.NewRecorder()
-	s.handleRepoMap(resp, httptest.NewRequest(http.MethodGet, "/api/repomap", nil))
-	if resp.Code != http.StatusNotFound {
-		t.Fatalf("repomap status = %d, want 404", resp.Code)
-	}
-}
-
-func TestRepoMapCacheExpiresWhenRepoChanges(t *testing.T) {
-	repoRoot := t.TempDir()
-	if err := os.WriteFile(filepath.Join(repoRoot, "a.go"), []byte("package demo\n"), 0o644); err != nil {
-		t.Fatal(err)
+	if len(repos) != 1 || repos[0].Path != filepath.Clean(repo) {
+		t.Fatalf("repos = %#v", repos)
 	}
 
-	s := New(Config{RepoRoot: repoRoot})
-	first, err := s.repoCityMap(repoRoot)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(first.Files) != 1 {
-		t.Fatalf("initial files = %d, want 1", len(first.Files))
-	}
-
-	// add a file, then age the cache entry past its TTL: the next build must
-	// pick up the new file instead of returning the stale map
-	if err := os.WriteFile(filepath.Join(repoRoot, "b.go"), []byte("package demo\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	abs, _ := filepath.Abs(repoRoot)
-	s.repoMapMu.Lock()
-	entry := s.repoMaps[abs]
-	entry.builtAt = entry.builtAt.Add(-2 * repoMapTTL)
-	s.repoMaps[abs] = entry
-	s.repoMapMu.Unlock()
-
-	second, err := s.repoCityMap(repoRoot)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(second.Files) != 2 {
-		t.Fatalf("files after change = %d, want 2 (stale cache returned)", len(second.Files))
-	}
-}
-
-func TestRepoMapCacheIsBounded(t *testing.T) {
-	s := New(Config{})
-	for i := 0; i < repoMapMaxEntries+5; i++ {
-		repo := t.TempDir()
-		if err := os.WriteFile(filepath.Join(repo, "a.go"), []byte("package demo\n"), 0o644); err != nil {
-			t.Fatal(err)
-		}
-		if _, err := s.repoCityMap(repo); err != nil {
-			t.Fatal(err)
-		}
-	}
-	s.repoMapMu.Lock()
-	n := len(s.repoMaps)
-	s.repoMapMu.Unlock()
-	if n > repoMapMaxEntries {
-		t.Fatalf("repo map cache size = %d, want <= %d", n, repoMapMaxEntries)
+	notFound := httptest.NewRecorder()
+	s.handleRepos(notFound, httptest.NewRequest(http.MethodGet, "/api/repos?repo="+url.QueryEscape(nonRepo), nil))
+	if notFound.Code != http.StatusNotFound {
+		t.Fatalf("repos?repo=<non-repo> status = %d, want 404", notFound.Code)
 	}
 }
 

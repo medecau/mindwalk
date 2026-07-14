@@ -102,7 +102,7 @@ func (Builder) BuildContext(ctx context.Context, repoRoot string, trace *model.T
 	dirs := make([]model.CityDir, 0)
 	layoutNode(rootNode, model.Rect{X: 0, Z: 0, W: 120, D: 120}, &cityFiles, &dirs)
 
-	commit, dirty := repoState(root)
+	commit, dirty := RepoState(root)
 	return &model.CityMap{
 		Version: 1,
 		Repo: model.RepoMeta{
@@ -305,7 +305,10 @@ func langForPath(path string) string {
 	}
 }
 
-func repoState(root string) (string, bool) {
+// RepoState reports the repo's short HEAD commit and whether its worktree has
+// uncommitted changes. Exported so callers outside a full Build — e.g. the
+// server's cheap repo-discovery listing — can read just the commit.
+func RepoState(root string) (string, bool) {
 	commitBytes, err := gitCommand(root, "rev-parse", "--short", "HEAD").Output()
 	commit := ""
 	if err == nil {

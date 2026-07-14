@@ -1,4 +1,4 @@
-import type { CityMap, ProjectBuild, ProjectMeta, SessionMeta, Trace } from "../types";
+import type { CityMap, ProjectBuild, ProjectMeta, RepoMeta, SessionMeta, Trace } from "../types";
 
 async function getJSON<T>(url: string): Promise<T> {
   const res = await fetch(url);
@@ -108,12 +108,16 @@ export function getSessionSnapshot(key: string): Promise<{ trace: Trace; city: C
   return getJSON<{ trace: Trace; city: CityMap }>(`/api/sessions/${encodeURIComponent(key)}/snapshot`);
 }
 
-// backs the static full-repo map view: the citymap for a repo, with no session
-// or trace attached. Without a repo path the server falls back to its
-// configured RepoRoot (the `mindwalk map <repo>` case).
-export function getRepoMap(repo?: string): Promise<CityMap> {
-  const url = repo ? `/api/repomap?repo=${encodeURIComponent(repo)}` : "/api/repomap";
-  return getJSON<CityMap>(url);
+// backs the Repos sidebar tab: every git repository discovered from a
+// session's working directory.
+export function listRepos(fresh = false): Promise<RepoMeta[]> {
+  return getJSON<RepoMeta[]>(fresh ? "/api/repos?fresh=1" : "/api/repos");
+}
+
+// validates a manually-added repo path, returning its RepoInfo if it's a git
+// repository. Rejects (404) otherwise — the caller toasts "not a git repository".
+export function checkRepo(path: string): Promise<RepoMeta> {
+  return getJSON<RepoMeta[]>(`/api/repos?repo=${encodeURIComponent(path)}`).then((repos) => repos[0]);
 }
 
 // backs the git-history view: a synthetic session built from a repo's commit

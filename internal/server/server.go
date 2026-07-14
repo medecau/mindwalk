@@ -41,7 +41,6 @@ type Config struct {
 	OpenSession string
 	Dev         bool
 	RepoRoot    string
-	MapOnly     bool
 	HistoryOnly bool
 }
 
@@ -60,8 +59,6 @@ type Server struct {
 	cacheFile map[string]fileFingerprint
 	inflight  map[string]*inflightLoad
 	summaries map[string]summaryCacheEntry
-	repoMaps  map[string]repoMapEntry
-	repoMapMu sync.Mutex
 	// merged project results, memoized by a signature of their member files so a
 	// project view re-parses and re-builds the citymap only when a member changes
 	projectTraces map[string]*model.Trace
@@ -74,11 +71,6 @@ type Server struct {
 
 type historyEntry struct {
 	trace   *model.Trace
-	city    *model.CityMap
-	builtAt time.Time
-}
-
-type repoMapEntry struct {
 	city    *model.CityMap
 	builtAt time.Time
 }
@@ -106,10 +98,6 @@ const (
 	sessionListTTL       = 5 * time.Second
 	traceCacheTTL        = 10 * time.Minute
 	traceCacheMaxEntries = 16
-	// repo map builds are relatively cheap; a short TTL keeps a long-running
-	// serve current as the tree changes without rebuilding on every request
-	repoMapTTL        = 30 * time.Second
-	repoMapMaxEntries = 16
 	// git history changes far less often than a live worktree and is expensive
 	// to rebuild (git log + citymap), so it holds a much longer TTL
 	historyTTL        = 10 * time.Minute
@@ -127,7 +115,6 @@ func New(cfg Config) *Server {
 		cacheFile: map[string]fileFingerprint{},
 		inflight:  map[string]*inflightLoad{},
 		summaries: map[string]summaryCacheEntry{},
-		repoMaps:  map[string]repoMapEntry{},
 
 		projectTraces: map[string]*model.Trace{},
 		projectMaps:   map[string]*model.CityMap{},
@@ -141,9 +128,9 @@ func (s *Server) Start(openBrowser bool) error {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/sessions", s.handleSessions)
 	mux.HandleFunc("/api/sessions/", s.handleSessionResource)
-	mux.HandleFunc("/api/repomap", s.handleRepoMap)
 	mux.HandleFunc("/api/projects", s.handleProjects)
 	mux.HandleFunc("/api/projects/", s.handleProjectResource)
+	mux.HandleFunc("/api/repos", s.handleRepos)
 	mux.HandleFunc("/api/history", s.handleHistory)
 	mux.HandleFunc("/", s.handleStatic)
 	handler := loopbackOnly(mux)
@@ -158,16 +145,11 @@ func (s *Server) Start(openBrowser bool) error {
 	}
 	addr := "http://" + ln.Addr().String()
 	// warm the session scan so the first page load doesn't wait on a cold walk
-	// over every session file. Map-only mode never lists sessions, so skip the
-	// scan of the whole Claude/Codex corpus.
-	if !s.cfg.MapOnly {
-		go func() { _, _ = s.listSessions() }()
-	}
+	// over every session file
+	go func() { _, _ = s.listSessions() }()
 	if openBrowser {
 		pageURL := addr
 		switch {
-		case s.cfg.MapOnly:
-			pageURL += "/?map=1"
 		case s.cfg.HistoryOnly:
 			pageURL += "/?history=1"
 		case s.cfg.OpenSession != "":
@@ -259,73 +241,6 @@ func (s *Server) handleSessionResource(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, city)
 	default:
 		http.NotFound(w, r)
-	}
-}
-
-// handleRepoMap serves the citymap for a repo with no session / trace attached.
-// It backs the static full-repo map view (mindwalk map <repo> and the ?map=1 UI
-// mode). The repo path comes from the ?repo= query param, falling back to the
-// server's configured RepoRoot. Maps are cached per path with a short TTL so a
-// long-running serve picks up tree changes, and the cache is size-bounded.
-//
-// The path is trusted: the server is localhost-only and already builds citymaps
-// for arbitrary session repos, so accepting a repo path here does not widen the
-// read surface. The builder only reads the tree (git ls-files / walk).
-func (s *Server) handleRepoMap(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-	repo := r.URL.Query().Get("repo")
-	if repo == "" {
-		repo = s.cfg.RepoRoot
-	}
-	if repo == "" {
-		http.Error(w, "no repo configured", http.StatusNotFound)
-		return
-	}
-	city, err := s.repoCityMap(repo)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	writeJSON(w, city)
-}
-
-func (s *Server) repoCityMap(repo string) (*model.CityMap, error) {
-	if abs, err := filepath.Abs(repo); err == nil {
-		repo = abs
-	}
-	s.repoMapMu.Lock()
-	defer s.repoMapMu.Unlock()
-	if entry, ok := s.repoMaps[repo]; ok && time.Since(entry.builtAt) < repoMapTTL {
-		return entry.city, nil
-	}
-	city, err := citymap.Builder{}.Build(repo, nil)
-	if err != nil {
-		return nil, err
-	}
-	s.repoMaps[repo] = repoMapEntry{city: city, builtAt: time.Now()}
-	s.evictRepoMapsLocked()
-	return city, nil
-}
-
-// evictRepoMapsLocked bounds the repo-map cache by dropping the oldest entries
-// once it grows past repoMapMaxEntries. Caller must hold repoMapMu.
-func (s *Server) evictRepoMapsLocked() {
-	for len(s.repoMaps) > repoMapMaxEntries {
-		var oldestKey string
-		var oldest time.Time
-		for key, entry := range s.repoMaps {
-			if oldestKey == "" || entry.builtAt.Before(oldest) {
-				oldestKey = key
-				oldest = entry.builtAt
-			}
-		}
-		if oldestKey == "" {
-			return
-		}
-		delete(s.repoMaps, oldestKey)
 	}
 }
 
@@ -427,6 +342,69 @@ func groupProjects(sessions []model.SessionMeta) []model.ProjectMeta {
 		return projects[i].Key < projects[j].Key
 	})
 	return projects
+}
+
+// handleRepos serves the git repositories discovered from session working
+// directories, for the Repos sidebar tab. With no ?repo= query it lists every
+// discovered repo; with ?repo=<path> it validates that single path instead —
+// 200 with one item if it's a git repo, 404 otherwise — which backs the
+// client's manual-add flow without building the repo's full history.
+func (s *Server) handleRepos(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if repo := r.URL.Query().Get("repo"); repo != "" {
+		info, ok := repoInfoForPath(repo)
+		if !ok {
+			http.Error(w, "not a git repository", http.StatusNotFound)
+			return
+		}
+		writeJSON(w, []model.RepoInfo{info})
+		return
+	}
+	sessions, err := s.listSessionsFresh(r.URL.Query().Get("fresh") == "1")
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, discoverRepos(sessions))
+}
+
+// discoverRepos filters groupProjects' cwds down to the ones that are git
+// repositories — the same cheap gate (citymap.IsRepo) the project citymap
+// build uses before falling back to a full-tree walk.
+func discoverRepos(sessions []model.SessionMeta) []model.RepoInfo {
+	projects := groupProjects(sessions)
+	repos := make([]model.RepoInfo, 0, len(projects))
+	for _, project := range projects {
+		if !citymap.IsRepo(project.Path) {
+			continue
+		}
+		commit, _ := citymap.RepoState(project.Path)
+		repos = append(repos, model.RepoInfo{
+			Key:     project.Key,
+			Path:    project.Path,
+			Name:    project.Name,
+			Commit:  commit,
+			EndedAt: project.EndedAt,
+		})
+	}
+	return repos
+}
+
+// repoInfoForPath validates a single manually-supplied path, reporting ok=false
+// when it is not a git repository.
+func repoInfoForPath(path string) (model.RepoInfo, bool) {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		abs = path
+	}
+	if !citymap.IsRepo(abs) {
+		return model.RepoInfo{}, false
+	}
+	commit, _ := citymap.RepoState(abs)
+	return model.RepoInfo{Key: projectKey(abs), Path: abs, Name: projectName(abs), Commit: commit}, true
 }
 
 // projectBuild describes the state of a project's citymap in a snapshot.

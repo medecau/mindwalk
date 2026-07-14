@@ -2,7 +2,6 @@ import {
   ChevronRight,
   Eye,
   EyeOff,
-  FolderOpen,
   GitCommitVertical,
   PanelLeftClose,
   RefreshCw,
@@ -15,14 +14,19 @@ import type { RailMode } from "../state/store";
 import { sessionColorHex } from "../scene/sessionColors";
 import { LogoMark } from "./LogoMark";
 import { toggleRailShortcut } from "./shortcuts";
-import type { ProjectMeta, SessionMeta } from "../types";
+import type { ProjectMeta, RepoMeta, SessionMeta } from "../types";
 
 interface SessionRailProps {
   sessions: SessionMeta[];
   projects: ProjectMeta[];
+  // repos discovered from session working directories
+  repos: RepoMeta[];
+  // repos the user added manually; get a remove button, since only these can be forgotten
+  extraRepos: RepoMeta[];
   mode: RailMode;
   activeKey?: string;
   activeProjectKey?: string;
+  activeRepoKey?: string;
   loading: boolean;
   hideEmpty: boolean;
   harnessFilter?: string;
@@ -31,6 +35,7 @@ interface SessionRailProps {
   collapsed: boolean;
   onSelect: (key: string) => void;
   onSelectProject: (key: string) => void;
+  onSelectRepo: (key: string, path: string) => void;
   onViewProjectSessions: (path: string) => void;
   onClearProjectFilter: () => void;
   onModeChange: (mode: RailMode) => void;
@@ -38,10 +43,10 @@ interface SessionRailProps {
   onHideEmptyChange: (hide: boolean) => void;
   onHarnessFilterChange: (harness?: string) => void;
   onCollapse: () => void;
-  // opens the static full-repo map for a repo path in a new tab
-  onOpenMap: (repo: string) => void;
-  // opens the git-history replay for a repo path in a new tab
-  onOpenHistory: (repo: string) => void;
+  // validates and adds a manually-typed repo path, then plays it
+  onAddRepo: (path: string) => void;
+  // forgets a manually-added repo (discovered repos can't be removed)
+  onRemoveRepo: (key: string) => void;
   // while a video export records, session switching is locked so it can't swap
   // the canvas or playhead out from under the recorder
   locked?: boolean;
@@ -55,9 +60,12 @@ const MAX_SWATCHES = 8;
 export const SessionRail = memo(function SessionRail({
   sessions,
   projects,
+  repos,
+  extraRepos,
   mode,
   activeKey,
   activeProjectKey,
+  activeRepoKey,
   loading,
   hideEmpty,
   harnessFilter,
@@ -65,6 +73,7 @@ export const SessionRail = memo(function SessionRail({
   collapsed,
   onSelect,
   onSelectProject,
+  onSelectRepo,
   onViewProjectSessions,
   onClearProjectFilter,
   onModeChange,
@@ -72,8 +81,8 @@ export const SessionRail = memo(function SessionRail({
   onHideEmptyChange,
   onHarnessFilterChange,
   onCollapse,
-  onOpenMap,
-  onOpenHistory,
+  onAddRepo,
+  onRemoveRepo,
   locked = false
 }: SessionRailProps) {
   const [query, setQuery] = useState("");
@@ -106,8 +115,25 @@ export const SessionRail = memo(function SessionRail({
     if (!q) return projects;
     return projects.filter((project) => `${project.name} ${project.path}`.toLowerCase().includes(q));
   }, [projects, query]);
+  // manually-added repos that duplicate a discovered one are shown once, as the
+  // discovered (non-removable) row — extraRepos only adds rows discovery missed
+  const discoveredKeys = useMemo(() => new Set(repos.map((r) => r.key)), [repos]);
+  const manualOnlyKeys = useMemo(
+    () => new Set(extraRepos.filter((r) => !discoveredKeys.has(r.key)).map((r) => r.key)),
+    [extraRepos, discoveredKeys]
+  );
+  const allRepos = useMemo(
+    () => [...repos, ...extraRepos.filter((r) => !discoveredKeys.has(r.key))],
+    [repos, extraRepos, discoveredKeys]
+  );
+  const shownRepos = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    if (!q) return allRepos;
+    return allRepos.filter((repo) => `${repo.name} ${repo.path}`.toLowerCase().includes(q));
+  }, [allRepos, query]);
 
   const isProjects = mode === "projects";
+  const isRepos = mode === "repos";
 
   return (
     <aside className={collapsed ? "session-rail collapsed" : "session-rail"}>
@@ -149,19 +175,27 @@ export const SessionRail = memo(function SessionRail({
         >
           Projects
         </button>
+        <button
+          role="tab"
+          aria-selected={isRepos}
+          className={isRepos ? "active" : ""}
+          onClick={() => onModeChange("repos")}
+        >
+          Repos
+        </button>
       </div>
       <div className="rail-controls">
         <label className="rail-filter">
           <Search size={14} aria-hidden />
           <input
             type="search"
-            placeholder={isProjects ? "Filter projects" : "Filter sessions"}
+            placeholder={isProjects ? "Filter projects" : isRepos ? "Filter repos" : "Filter sessions"}
             value={query}
             onChange={(e) => setQuery(e.currentTarget.value)}
-            aria-label={isProjects ? "Filter projects" : "Filter sessions"}
+            aria-label={isProjects ? "Filter projects" : isRepos ? "Filter repos" : "Filter sessions"}
           />
         </label>
-        {!isProjects && (harnesses.length > 1 || emptyCount > 0) ? (
+        {mode === "sessions" && (harnesses.length > 1 || emptyCount > 0) ? (
           <div className="rail-chips" role="group" aria-label="Session filters">
             {harnesses.length > 1 ? (
               <>
@@ -195,7 +229,7 @@ export const SessionRail = memo(function SessionRail({
             ) : null}
           </div>
         ) : null}
-        {!isProjects && projectFilter ? (
+        {mode === "sessions" && projectFilter ? (
           <div className="rail-chips" role="group" aria-label="Project filter">
             <button
               className="chip active project-filter-chip"
@@ -210,8 +244,44 @@ export const SessionRail = memo(function SessionRail({
         ) : null}
       </div>
       <div className="session-list" aria-busy={loading}>
-        {isProjects
-          ? shownProjects.map((project) => (
+        {isRepos
+          ? shownRepos.map((repo) => (
+              <div key={repo.key} className="project-row">
+                <button
+                  className={repo.key === activeRepoKey ? "session-row active" : "session-row"}
+                  onClick={() => onSelectRepo(repo.key, repo.path)}
+                  title={repo.path}
+                  disabled={locked}
+                >
+                  <span className="session-title">
+                    <GitCommitVertical size={13} aria-hidden className="repo-row-icon" />
+                    {repo.name}
+                  </span>
+                  <span className="session-meta">
+                    <span className="session-meta-text">
+                      {repo.commit ? `${repo.commit}${repo.endedAt ? " · " : ""}` : ""}
+                      {repo.endedAt ? shortDate(repo.endedAt) : ""}
+                    </span>
+                  </span>
+                </button>
+                {manualOnlyKeys.has(repo.key) ? (
+                  <button
+                    className="project-jump"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onRemoveRepo(repo.key);
+                    }}
+                    title={`Forget ${repo.name}`}
+                    aria-label={`Forget ${repo.name}`}
+                    disabled={locked}
+                  >
+                    <X size={14} />
+                  </button>
+                ) : null}
+              </div>
+            ))
+          : isProjects
+            ? shownProjects.map((project) => (
               // row wrapper: the select button and the sessions-jump arrow are
               // siblings, never nested, so we don't put a button inside a button
               <div key={project.key} className="project-row">
@@ -268,63 +338,63 @@ export const SessionRail = memo(function SessionRail({
                 </span>
               </button>
             ))}
+        {isRepos && shownRepos.length === 0 ? (
+          <p className="muted" style={{ padding: "10px 8px" }}>
+            {loading && allRepos.length === 0 ? "Scanning repositories…" : "No matching repos."}
+          </p>
+        ) : null}
         {isProjects && shownProjects.length === 0 ? (
           <p className="muted" style={{ padding: "10px 8px" }}>
             {loading && projects.length === 0 ? "Scanning projects…" : "No matching projects."}
           </p>
         ) : null}
-        {!isProjects && shown.length === 0 ? (
+        {mode === "sessions" && shown.length === 0 ? (
           <p className="muted" style={{ padding: "10px 8px" }}>
             {loading && sessions.length === 0 ? "Scanning sessions…" : "No matching sessions."}
           </p>
         ) : null}
       </div>
-      <form
-        className="rail-open"
-        onSubmit={(e) => {
-          e.preventDefault();
-          const path = repoPath.trim();
-          if (path) onOpenMap(path);
-        }}
-      >
-        <label className="rail-open-label" htmlFor="rail-open-input">
-          Explore a repository
-        </label>
-        <input
-          id="rail-open-input"
-          type="text"
-          className="rail-open-input"
-          placeholder="/path/to/repo"
-          value={repoPath}
-          onChange={(e) => setRepoPath(e.currentTarget.value)}
-          spellCheck={false}
-        />
-        <div className="rail-open-row">
-          <button type="submit" className="rail-open-btn" disabled={repoPath.trim() === ""} title="Open static repository map">
-            <FolderOpen size={13} aria-hidden />
-            <span>Map</span>
-          </button>
-          <button
-            type="button"
-            className="rail-open-btn"
-            disabled={repoPath.trim() === ""}
-            title="Replay the repository's git history"
-            onClick={() => {
-              const path = repoPath.trim();
-              if (path) onOpenHistory(path);
-            }}
-          >
-            <GitCommitVertical size={13} aria-hidden />
-            <span>History</span>
-          </button>
-        </div>
-      </form>
+      {isRepos ? (
+        <form
+          className="rail-open"
+          onSubmit={(e) => {
+            e.preventDefault();
+            const path = repoPath.trim();
+            if (!path) return;
+            onAddRepo(path);
+            setRepoPath("");
+          }}
+        >
+          <label className="rail-open-label" htmlFor="rail-open-input">
+            Add a repository
+          </label>
+          <input
+            id="rail-open-input"
+            type="text"
+            className="rail-open-input"
+            placeholder="/path/to/repo"
+            value={repoPath}
+            onChange={(e) => setRepoPath(e.currentTarget.value)}
+            spellCheck={false}
+          />
+          <div className="rail-open-row">
+            <button type="submit" className="rail-open-btn" disabled={repoPath.trim() === ""}>
+              <GitCommitVertical size={13} aria-hidden />
+              <span>Add</span>
+            </button>
+          </div>
+        </form>
+      ) : null}
       <div className="rail-foot">
-        {isProjects
-          ? shownProjects.length === projects.length
-            ? `${projects.length} project${projects.length === 1 ? "" : "s"}`
-            : `${shownProjects.length} of ${projects.length} projects`
-          : shown.length === sessions.length
+        {isRepos
+          ? shownRepos.length === allRepos.length
+            ? `${allRepos.length} repo${allRepos.length === 1 ? "" : "s"}`
+            : `${shownRepos.length} of ${allRepos.length} repos`
+          : isProjects
+            ? shownProjects.length === projects.length
+              ? `${projects.length} project${projects.length === 1 ? "" : "s"}`
+              : `${shownProjects.length} of ${projects.length} projects`
+            : shown.length === sessions.length
             ? `${sessions.length} session${sessions.length === 1 ? "" : "s"}`
             : `${shown.length} of ${sessions.length} sessions`}
       </div>

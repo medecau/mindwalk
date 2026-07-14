@@ -194,3 +194,14 @@ type ProjectMeta struct {
 	EndedAt      string   `json:"endedAt,omitempty"`
 	Harnesses    []string `json:"harnesses"`
 }
+
+// RepoInfo describes a git repository discovered from a session's working
+// directory, or added manually by the user. It backs the Repos sidebar tab,
+// not the exported trace/citymap contract.
+type RepoInfo struct {
+	Key     string `json:"key"`
+	Path    string `json:"path"`
+	Name    string `json:"name"`
+	Commit  string `json:"commit,omitempty"`
+	EndedAt string `json:"endedAt,omitempty"`
+}

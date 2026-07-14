@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://mindwalk.local/schema/repos.schema.json",
+  "title": "mindwalk repos",
+  "description": "Response of GET /api/repos: git repositories discovered from session working directories (or a single validated path when called with ?repo=).",
+  "type": "array",
+  "items": {
+    "type": "object",
+    "required": ["key", "path", "name"],
+    "properties": {
+      "key": { "type": "string" },
+      "path": { "type": "string" },
+      "name": { "type": "string" },
+      "commit": { "type": "string" },
+      "endedAt": { "type": "string" }
+    },
+    "additionalProperties": false
+  }
+}

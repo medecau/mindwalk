@@ -379,6 +379,12 @@ dd {
   color: oklch(0.95 0.02 88);
 }
 
+.repo-row-icon {
+  vertical-align: -2px;
+  margin-right: 6px;
+  color: var(--muted);
+}
+
 /* one fixed line: dot + text, ellipsized — row height never depends on
    how long the branch name happens to be */
 .session-meta {
@@ -800,108 +806,6 @@ dd {
 .view-toggle button.active {
   color: oklch(0.95 0.02 88);
   background: var(--panel-raised);
-}
-
-.map-controls {
-  position: relative;
-  pointer-events: auto;
-  justify-self: end;
-}
-
-/* this control sits at the right edge of the viewport, so its hint must grow
-   leftward like .map-menu does — the shared [data-hint] rule anchors left:0,
-   which would run the tooltip off-screen here */
-.map-controls [data-hint]::after {
-  left: auto;
-  right: 0;
-}
-
-.map-btn {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 5px 11px;
-  font-size: var(--text-xs);
-  font-weight: 560;
-  letter-spacing: 0.05em;
-  color: var(--muted);
-  border: 1px solid var(--hairline-strong);
-  border-radius: 4px;
-}
-
-.map-btn:hover {
-  color: var(--ink);
-  background: var(--panel-raised);
-}
-
-.map-menu {
-  position: absolute;
-  top: calc(100% + 6px);
-  right: 0;
-  z-index: 20;
-  display: grid;
-  gap: 6px;
-  padding: 8px;
-  min-width: 220px;
-  border: 1px solid var(--hairline-strong);
-  border-radius: 6px;
-  background: var(--panel-raised);
-  box-shadow: 0 8px 24px oklch(0 0 0 / 0.4);
-}
-
-.map-menu-group {
-  display: grid;
-  gap: 5px;
-}
-
-.map-menu-group + .map-menu-group {
-  padding-top: 8px;
-  border-top: 1px solid var(--hairline);
-}
-
-.map-menu-title {
-  color: var(--faint);
-  font-size: var(--text-xs);
-  letter-spacing: 0.05em;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.map-menu-actions {
-  display: flex;
-  gap: 6px;
-}
-
-.map-menu-row {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  flex: 1;
-  justify-content: center;
-  padding: 6px 8px;
-  font-size: var(--text-xs);
-  color: var(--ink);
-  border: 1px solid var(--hairline-strong);
-  border-radius: 4px;
-}
-
-.map-menu-row:hover:not(:disabled) {
-  background: var(--panel);
-}
-
-.map-menu-row:disabled {
-  opacity: 0.4;
-}
-
-.map-menu-input {
-  min-width: 0;
-  padding: 5px 8px;
-  font-size: var(--text-xs);
-  color: var(--ink);
-  background: var(--panel);
-  border: 1px solid var(--hairline-strong);
-  border-radius: 4px;
 }
 
 .legend-dot {

@@ -23,9 +23,6 @@ interface CitySceneProps {
   selectedPath?: string;
   onSelect: (path?: string) => void;
   onCanvasReady?: (canvas: HTMLCanvasElement | null) => void;
-  // static map mode: with no session to drive attention height, raise terrain
-  // columns by file size (lines of code) instead of leaving the plain flat
-  locHeights?: boolean;
   // one hex color per source session; present only in a merged project view,
   // where the walker (trail + firefly) is tinted by whose action it plays
   sourceColors?: string[];
@@ -114,7 +111,6 @@ export function CityScene({
   selectedPath,
   onSelect,
   onCanvasReady,
-  locHeights,
   sourceColors,
   historyColors,
   currentTouchPaths,
@@ -539,11 +535,6 @@ export function CityScene({
     const heights = heightsRef.current;
     const slots: TerrainSlot[] = [];
     const present = new Set<number>();
-    // static map mode: no session drives attention, so raise every column by
-    // its lines of code instead of leaving the terrain flat
-    const maxLog = locHeights
-      ? Math.log2(Math.max(1, city.files.reduce((m, f) => Math.max(m, f.lines), 1)))
-      : 0;
 
     // git history mode: churn of the last commit that touched a file, looked up
     // per touched file from the playback history (each file's event list). The
@@ -582,13 +573,6 @@ export function CityScene({
         if (selected) color = colors.selected;
         slots.push({ fileId: file.id, target: attentionHeight(touch, visits) * decay, color });
         present.add(file.id);
-      } else if (locHeights) {
-        const t = locFraction(file.lines, maxLog);
-        let color = locColor(t);
-        if (file.ghost) color = color.lerp(colors.ghost, 0.45);
-        if (selected) color = colors.selected;
-        slots.push({ fileId: file.id, target: locHeight(t), color });
-        present.add(file.id);
       }
     }
     // let columns that just went dark shrink back into the plain
@@ -605,7 +589,7 @@ export function CityScene({
     if (terrain.instanceColor) terrain.instanceColor.needsUpdate = true;
     if (tiles.instanceColor) tiles.instanceColor.needsUpdate = true;
     slotsRef.current = slots;
-  }, [city, playback, selectedPath, locHeights, historyColors, currentTouchPaths, historyMaxLog]);
+  }, [city, playback, selectedPath, historyColors, currentTouchPaths, historyMaxLog]);
 
   // the inspector opens over the right edge; pan the selected tile clear of it
   useEffect(() => {

@@ -50,6 +50,16 @@ export interface ProjectMeta {
   harnesses: string[];
 }
 
+/** a git repository for the Repos sidebar tab: either discovered from a
+ * session's working directory, or added manually by the user */
+export interface RepoMeta {
+  key: string;
+  path: string;
+  name: string;
+  commit?: string;
+  endedAt?: string;
+}
+
 /** a session that contributed events to a merged project trace; the client
  * assigns its color from its index in Trace.sources */
 export interface TraceSource {

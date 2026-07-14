@@ -2,13 +2,14 @@ import { PanelLeftOpen } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   buildProject,
+  checkRepo,
   describeError,
   getHistory,
   getProjectSnapshot,
-  getRepoMap,
   getSessionSnapshot,
   isCancel,
   listProjects,
+  listRepos,
   listSessions,
   type BuildProgress
 } from "./api/client";
@@ -18,7 +19,7 @@ import { CityScene } from "./scene/CityScene";
 import { sessionColorHex } from "./scene/sessionColors";
 import { TreeScene } from "./scene/TreeScene";
 import { sessionVisible } from "./state/filters";
-import { useAppStore } from "./state/store";
+import { useAppStore, type RailMode } from "./state/store";
 import { Hud } from "./ui/Hud";
 import { Inspector } from "./ui/Inspector";
 import { ProjectBuildGate } from "./ui/ProjectBuildGate";
@@ -31,9 +32,12 @@ export default function App() {
   const {
     sessions,
     projects,
+    repos,
+    extraRepos,
     railMode,
     activeSessionKey,
     activeProjectKey,
+    activeRepoKey,
     trace,
     city,
     currentSeq,
@@ -45,17 +49,20 @@ export default function App() {
     harnessFilter,
     projectFilter,
     railCollapsed,
-    mapOnly,
+    standalone,
     immersive,
     historyMode,
     setView,
     setSessions,
     setProjects,
+    setRepos,
+    addExtraRepo,
+    removeExtraRepo,
     setRailMode,
     setActiveSession,
     setActiveProject,
+    setActiveRepo,
     setData,
-    setCityOnly,
     setHistory,
     setCurrentSeq,
     setSelectedPath,
@@ -64,11 +71,13 @@ export default function App() {
     setHideEmpty,
     setHarnessFilter,
     setProjectFilter,
-    setRailCollapsed
+    setRailCollapsed,
+    setStandalone
   } = useAppStore();
   const urlSessionConsumed = useRef(false);
   const scanGeneration = useRef(0);
   const projectScanGeneration = useRef(0);
+  const repoScanGeneration = useRef(0);
   const loadGeneration = useRef(0);
   const manualRefreshInFlight = useRef(false);
   const pendingLoads = useRef(0);
@@ -78,6 +87,8 @@ export default function App() {
   const [exporting, setExporting] = useState(false);
   const activeProjectKeyRef = useRef(activeProjectKey);
   activeProjectKeyRef.current = activeProjectKey;
+  const activeRepoKeyRef = useRef(activeRepoKey);
+  activeRepoKeyRef.current = activeRepoKey;
   // non-repo project consent gate + live build progress
   const [buildGate, setBuildGate] = useState<{ key: string; root: string } | undefined>();
   const [buildProgress, setBuildProgress] = useState<BuildProgress | null>(null);
@@ -230,25 +241,6 @@ export default function App() {
     }
   }, [beginLoading, endLoading, harnessFilter, hideEmpty, loadSession, setActiveSession, setError, setSessions]);
 
-  const loadRepoMap = useCallback(async (repo?: string) => {
-    beginLoading();
-    setError(undefined);
-    try {
-      const city = await getRepoMap(repo);
-      setCityOnly(city);
-    } catch (err) {
-      setError(describeError(err, "loading the repository map"));
-    } finally {
-      endLoading();
-    }
-  }, [beginLoading, endLoading, setCityOnly, setError]);
-
-  // open the static map for a repo in a new tab so the running session stays put
-  const openMap = useCallback((repo?: string) => {
-    const url = repo ? `/?map=1&repo=${encodeURIComponent(repo)}` : "/?map=1";
-    window.open(url, "_blank", "noopener");
-  }, []);
-
   const scanProjects = useCallback(async (fresh: boolean) => {
     const generation = ++projectScanGeneration.current;
     beginLoading();
@@ -278,34 +270,75 @@ export default function App() {
     }
   }, [beginLoading, endLoading, loadProject, setActiveProject, setError, setProjects]);
 
-  const loadHistory = useCallback(async (repo?: string) => {
+  // repos never auto-play (unlike scan/scanProjects); the sidebar just lists
+  // them and the user picks one to replay
+  const scanRepos = useCallback(async (fresh: boolean) => {
+    const generation = ++repoScanGeneration.current;
+    beginLoading();
+    setError(undefined);
+    try {
+      const data = await listRepos(fresh);
+      if (generation !== repoScanGeneration.current || useAppStore.getState().railMode !== "repos") return;
+      setRepos(data);
+    } catch (err) {
+      if (generation === repoScanGeneration.current) {
+        setError(describeError(err, "scanning repositories"));
+      }
+    } finally {
+      endLoading();
+    }
+  }, [beginLoading, endLoading, setError, setRepos]);
+
+  const loadHistory = useCallback(async (repo?: string, key?: string) => {
+    const generation = ++loadGeneration.current;
     beginLoading();
     setError(undefined);
     try {
       const { trace: nextTrace, city: nextCity } = await getHistory(repo);
+      if (generation !== loadGeneration.current) return;
+      if (key !== undefined && activeRepoKeyRef.current !== key) return;
       setHistory(nextTrace, nextCity);
     } catch (err) {
-      setError(describeError(err, "loading the git history"));
+      if (generation === loadGeneration.current) {
+        setError(describeError(err, "loading the git history"));
+      }
     } finally {
       endLoading();
     }
   }, [beginLoading, endLoading, setHistory, setError]);
 
-  const openHistory = useCallback((repo?: string) => {
-    const url = repo ? `/?history=1&repo=${encodeURIComponent(repo)}` : "/?history=1";
-    window.open(url, "_blank", "noopener");
-  }, []);
+  const selectRepo = useCallback((key: string, path: string) => {
+    activeRepoKeyRef.current = key;
+    activeSessionKeyRef.current = undefined;
+    activeProjectKeyRef.current = undefined;
+    setActiveRepo(key);
+    void loadHistory(path, key);
+  }, [loadHistory, setActiveRepo]);
+
+  // validates a manually-typed path against /api/repos?repo=; on success it's
+  // remembered in localStorage and played immediately
+  const addRepo = useCallback(async (path: string) => {
+    setError(undefined);
+    try {
+      const info = await checkRepo(path);
+      addExtraRepo(info);
+      selectRepo(info.key, info.path);
+    } catch (err) {
+      setError(describeError(err, "adding the repository"));
+    }
+  }, [addExtraRepo, selectRepo, setError]);
 
   const refresh = useCallback(() => {
     if (manualRefreshInFlight.current) return;
     manualRefreshInFlight.current = true;
-    const run = useAppStore.getState().railMode === "projects" ? scanProjects(true) : scan(true);
+    const mode = useAppStore.getState().railMode;
+    const run = mode === "projects" ? scanProjects(true) : mode === "repos" ? scanRepos(true) : scan(true);
     void run.finally(() => {
       manualRefreshInFlight.current = false;
     });
-  }, [scan, scanProjects]);
+  }, [scan, scanProjects, scanRepos]);
 
-  const changeMode = useCallback((mode: "sessions" | "projects") => {
+  const changeMode = useCallback((mode: RailMode) => {
     if (mode === useAppStore.getState().railMode) return;
     setRailMode(mode);
     // a plain mode toggle drops any per-project pre-filter, so switching to
@@ -317,12 +350,16 @@ export default function App() {
       activeProjectKeyRef.current = undefined;
       setActiveProject(undefined);
       void scanProjects(false);
+    } else if (mode === "repos") {
+      activeRepoKeyRef.current = undefined;
+      setActiveRepo(undefined);
+      void scanRepos(false);
     } else {
       activeSessionKeyRef.current = undefined;
       setActiveSession(undefined);
       void scan(false);
     }
-  }, [scan, scanProjects, setRailMode, setActiveProject, setActiveSession, setProjectFilter]);
+  }, [scan, scanProjects, scanRepos, setRailMode, setActiveProject, setActiveSession, setActiveRepo, setProjectFilter]);
 
   // the per-project arrow: switch to Sessions filtered to that project. order
   // matters — changeMode clears the filter, so set it after the switch (both
@@ -416,14 +453,14 @@ export default function App() {
 
   useEffect(() => {
     const params = new URL(window.location.href).searchParams;
-    if (params.get("map") === "1") {
-      void loadRepoMap(params.get("repo") ?? undefined);
-    } else if (params.get("history") === "1") {
+    if (params.get("history") === "1") {
+      setStandalone(true);
       void loadHistory(params.get("repo") ?? undefined);
-    } else if (useAppStore.getState().railMode === "projects") {
-      void scanProjects(false);
     } else {
-      void scan(false);
+      const mode = useAppStore.getState().railMode;
+      if (mode === "projects") void scanProjects(false);
+      else if (mode === "repos") void scanRepos(false);
+      else void scan(false);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -494,12 +531,15 @@ export default function App() {
   }, [trace]);
 
   // the empty-stage card and scanning toast follow the active rail mode, so a
-  // loaded project is never covered by a "No sessions found" overlay
-  const railEmpty = railMode === "projects" ? projects.length === 0 : sessions.length === 0;
+  // loaded project is never covered by a "No sessions found" overlay. Repos
+  // never auto-play, so its empty state is "nothing selected yet" rather than
+  // "no repos found"
+  const railEmpty =
+    railMode === "projects" ? projects.length === 0 : railMode === "repos" ? !city : sessions.length === 0;
 
   const frameClass = [
     "app-frame",
-    mapOnly || historyMode || railCollapsed ? "rail-collapsed" : "",
+    standalone || railCollapsed ? "rail-collapsed" : "",
     immersive ? "immersive" : ""
   ]
     .filter(Boolean)
@@ -507,13 +547,16 @@ export default function App() {
 
   return (
     <main className={frameClass}>
-      {mapOnly || historyMode ? null : (
+      {standalone ? null : (
         <SessionRail
           sessions={sessions}
           projects={projects}
+          repos={repos}
+          extraRepos={extraRepos}
           mode={railMode}
           activeKey={activeSessionKey}
           activeProjectKey={activeProjectKey}
+          activeRepoKey={activeRepoKey}
           loading={loading}
           hideEmpty={hideEmpty}
           harnessFilter={harnessFilter}
@@ -521,6 +564,7 @@ export default function App() {
           collapsed={railCollapsed}
           onSelect={selectSession}
           onSelectProject={selectProject}
+          onSelectRepo={selectRepo}
           onViewProjectSessions={viewProjectSessions}
           onClearProjectFilter={clearProjectFilter}
           onModeChange={changeMode}
@@ -528,14 +572,14 @@ export default function App() {
           onHideEmptyChange={setHideEmpty}
           onHarnessFilterChange={setHarnessFilter}
           onCollapse={collapseRail}
-          onOpenMap={openMap}
-          onOpenHistory={openHistory}
+          onAddRepo={addRepo}
+          onRemoveRepo={removeExtraRepo}
           locked={exporting}
         />
       )}
       <section className="stage">
         <div className="viewport">
-          {!mapOnly && !historyMode && railCollapsed ? (
+          {!standalone && railCollapsed ? (
             <button
               className="rail-expand"
               onClick={expandRail}
@@ -561,7 +605,6 @@ export default function App() {
               selectedPath={selectedPath}
               onSelect={setSelectedPath}
               onCanvasReady={handleCanvasReady}
-              locHeights={mapOnly}
               sourceColors={sourceColors}
               historyColors={historyMode}
               currentTouchPaths={currentTouchPaths}
@@ -578,8 +621,6 @@ export default function App() {
             churn={churn}
             onViewChange={setView}
             onSelectFile={setSelectedPath}
-            onOpenMap={openMap}
-            onOpenHistory={openHistory}
             locked={exporting}
           />
           {selectedFile ? (
@@ -599,28 +640,40 @@ export default function App() {
               onCancel={cancelBuild}
             />
           ) : null}
-          {!mapOnly && !historyMode && !loading && railEmpty ? (
+          {!standalone && !loading && railEmpty ? (
             <div className="empty-stage">
               <div className="card">
-                <h2>{railMode === "projects" ? "No projects found" : "No sessions found"}</h2>
+                <h2>
+                  {railMode === "projects"
+                    ? "No projects found"
+                    : railMode === "repos"
+                      ? "Select a repository to replay its git history"
+                      : "No sessions found"}
+                </h2>
                 <p>
-                  mindwalk scans <code>~/.claude/projects</code> and <code>~/.codex/sessions</code> for agent
-                  traces. Run a session there, then refresh.
+                  {railMode === "repos" ? (
+                    "Pick a repository from the sidebar, or add one by path."
+                  ) : (
+                    <>
+                      mindwalk scans <code>~/.claude/projects</code> and <code>~/.codex/sessions</code> for agent
+                      traces. Run a session there, then refresh.
+                    </>
+                  )}
                 </p>
               </div>
             </div>
           ) : null}
           {loading ? (
             <div className="toast">
-              {mapOnly
-                ? "Building the map…"
-                : historyMode
-                  ? "Reading git history…"
-                  : railEmpty
-                    ? railMode === "projects"
-                      ? "Scanning projects…"
+              {historyMode
+                ? "Reading git history…"
+                : railEmpty
+                  ? railMode === "projects"
+                    ? "Scanning projects…"
+                    : railMode === "repos"
+                      ? "Scanning repositories…"
                       : "Scanning sessions…"
-                    : "Reading trace…"}
+                  : "Reading trace…"}
             </div>
           ) : null}
           {error ? <div className="toast error">{error}</div> : null}
