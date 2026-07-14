@@ -440,9 +440,16 @@ dd {
   text-transform: uppercase;
 }
 
-.rail-open-row {
+.rail-open-combo {
   display: flex;
-  gap: 6px;
+  align-items: stretch;
+  background: var(--panel);
+  border: 1px solid var(--hairline-strong);
+  border-radius: 4px;
+}
+
+.rail-open-combo:focus-within {
+  border-color: var(--muted);
 }
 
 .rail-open-input {
@@ -451,9 +458,9 @@ dd {
   padding: 6px 8px;
   color: var(--ink);
   font-size: var(--text-sm);
-  background: var(--panel);
-  border: 1px solid var(--hairline-strong);
-  border-radius: 4px;
+  background: transparent;
+  border: none;
+  border-radius: 4px 0 0 4px;
 }
 
 .rail-open-input::placeholder {
@@ -462,22 +469,27 @@ dd {
 
 .rail-open-input:focus {
   outline: none;
-  border-color: var(--muted);
 }
 
-.rail-open-btn {
+.rail-open-add {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: 5px;
-  flex: 1;
-  padding: 6px 11px;
+  width: 28px;
+  color: var(--muted);
+  background: transparent;
+  border: none;
+  border-left: 1px solid var(--hairline-strong);
+  border-radius: 0 4px 4px 0;
+}
+
+.rail-open-add:hover:not(:disabled) {
   color: var(--ink);
-  font-size: var(--text-xs);
-  font-weight: 560;
-  border: 1px solid var(--hairline-strong);
-  border-radius: 4px;
-  white-space: nowrap;
+  background: var(--panel-raised);
+}
+
+.rail-open-add:disabled {
+  opacity: 0.4;
 }
 
 .rail-open-btn:hover:not(:disabled) {
@@ -1557,8 +1569,24 @@ dd {
 }
 
 .toast.error {
+  display: flex;
+  align-items: center;
+  gap: 8px;
   color: var(--alarm);
   border-color: oklch(0.7 0.16 32 / 0.5);
+  /* unlike the passthrough default, an error toast has a dismiss button — it
+     needs its own click, and lingers until dismissed or a new load clears it */
+  pointer-events: auto;
+}
+
+.toast-dismiss {
+  display: inline-flex;
+  color: inherit;
+  opacity: 0.7;
+}
+
+.toast-dismiss:hover {
+  opacity: 1;
 }
 
 /* ---------- empty state ---------- */

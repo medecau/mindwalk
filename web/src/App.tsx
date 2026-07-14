@@ -1,4 +1,4 @@
-import { PanelLeftOpen } from "lucide-react";
+import { PanelLeftOpen, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   buildProject,
@@ -676,7 +676,14 @@ export default function App() {
                   : "Reading trace…"}
             </div>
           ) : null}
-          {error ? <div className="toast error">{error}</div> : null}
+          {error ? (
+            <div className="toast error">
+              <span>{error}</span>
+              <button className="toast-dismiss" onClick={() => setError(undefined)} aria-label="Dismiss error">
+                <X size={12} />
+              </button>
+            </div>
+          ) : null}
         </div>
         <Timeline
           trace={trace}

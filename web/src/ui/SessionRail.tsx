@@ -4,6 +4,7 @@ import {
   EyeOff,
   GitCommitVertical,
   PanelLeftClose,
+  Plus,
   RefreshCw,
   Search,
   X
@@ -161,8 +162,8 @@ export const SessionRail = memo(function SessionRail({
       <div className="rail-mode" role="tablist" aria-label="Sidebar mode">
         <button
           role="tab"
-          aria-selected={!isProjects}
-          className={isProjects ? "" : "active"}
+          aria-selected={mode === "sessions"}
+          className={mode === "sessions" ? "active" : ""}
           onClick={() => onModeChange("sessions")}
         >
           Sessions
@@ -368,19 +369,24 @@ export const SessionRail = memo(function SessionRail({
           <label className="rail-open-label" htmlFor="rail-open-input">
             Add a repository
           </label>
-          <input
-            id="rail-open-input"
-            type="text"
-            className="rail-open-input"
-            placeholder="/path/to/repo"
-            value={repoPath}
-            onChange={(e) => setRepoPath(e.currentTarget.value)}
-            spellCheck={false}
-          />
-          <div className="rail-open-row">
-            <button type="submit" className="rail-open-btn" disabled={repoPath.trim() === ""}>
-              <GitCommitVertical size={13} aria-hidden />
-              <span>Add</span>
+          <div className="rail-open-combo">
+            <input
+              id="rail-open-input"
+              type="text"
+              className="rail-open-input"
+              placeholder="/path/to/repo"
+              value={repoPath}
+              onChange={(e) => setRepoPath(e.currentTarget.value)}
+              spellCheck={false}
+            />
+            <button
+              type="submit"
+              className="rail-open-add"
+              disabled={repoPath.trim() === ""}
+              title="Add repository"
+              aria-label="Add repository"
+            >
+              <Plus size={14} aria-hidden />
             </button>
           </div>
         </form>
