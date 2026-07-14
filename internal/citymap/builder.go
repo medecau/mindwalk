@@ -899,9 +899,10 @@ func layoutRow(row []int, areas []float64, remaining model.Rect, out []model.Rec
 }
 
 // fileSeamKeep is the fraction of a squarified file rect's area kept after
-// seamInset; the rest becomes a thin dark gutter between neighboring tiles so
-// they read as separate blocks instead of a seamless slab.
-const fileSeamKeep = 0.875
+// seamInset; the rest becomes a dark gutter between neighboring tiles so they
+// read as separate blocks -- with real streets in the gap -- instead of a
+// seamless slab.
+const fileSeamKeep = 0.72
 
 // seamInset shrinks rect toward its own center by a uniform scale, so exactly
 // fileSeamKeep of its area survives regardless of the rect's aspect ratio.

@@ -1,4 +1,7 @@
 import * as THREE from "three";
+import { LineSegments2 } from "three/examples/jsm/lines/LineSegments2.js";
+import { LineSegmentsGeometry } from "three/examples/jsm/lines/LineSegmentsGeometry.js";
+import { LineMaterial } from "three/examples/jsm/lines/LineMaterial.js";
 import { EMBER } from "./sceneUtils";
 
 const SAMPLES = 14;
@@ -88,37 +91,51 @@ export class TrailRenderer {
 
 const SEGMENTS_PER_PATH = 2; // Manhattan L: start -> corner -> end
 const MAX_PATHS = 11; // playback keeps 12 recent targets → at most 11 paths
+// street width in CSS pixels (worldUnits: false) -- LineBasicMaterial caps
+// linewidth at 1px on WebGL everywhere but macOS/ANGLE, so fat lines need the
+// instanced-quad approach (LineSegments2 + LineMaterial) to render reliably.
+const STREET_LINEWIDTH = 2.6;
 
 // Fixed-capacity street renderer for CityScene's flat quadtree grid: ground-
 // hugging orthogonal (Manhattan) paths between consecutively touched files,
-// in place of TrailRenderer's flying arcs. Same fixed-capacity buffer,
-// recency fade, and additive blending as TrailRenderer above.
+// in place of TrailRenderer's flying arcs. Same recency fade and additive
+// blending as TrailRenderer above, but built on the fat-line instanced-quad
+// path (LineSegments2) instead of plain LineSegments, since a 1px-capped
+// street reads as a hairline seam and z-fights with the tiles it rides over.
 export class StreetRenderer {
-  readonly object: THREE.LineSegments;
-  private readonly positions: THREE.BufferAttribute;
-  private readonly colors: THREE.BufferAttribute;
+  readonly object: LineSegments2;
+  private readonly geometry: LineSegmentsGeometry;
+  private readonly material: LineMaterial;
   private readonly corner = new THREE.Vector3();
   private readonly color = new THREE.Color();
+  // scratch buffers sized for MAX_PATHS; each update() writes a prefix and
+  // hands setPositions/setColors a subarray view over just that prefix, so no
+  // per-tick allocation beyond the (tiny) InstancedInterleavedBuffer wrapper
+  // setPositions/setColors themselves construct.
+  private readonly positions = new Float32Array(MAX_PATHS * SEGMENTS_PER_PATH * 6);
+  private readonly colors = new Float32Array(MAX_PATHS * SEGMENTS_PER_PATH * 6);
 
   constructor() {
-    const vertexCount = MAX_PATHS * SEGMENTS_PER_PATH * 2;
-    const geometry = new THREE.BufferGeometry();
-    this.positions = new THREE.BufferAttribute(new Float32Array(vertexCount * 3), 3);
-    this.positions.setUsage(THREE.DynamicDrawUsage);
-    this.colors = new THREE.BufferAttribute(new Float32Array(vertexCount * 3), 3);
-    this.colors.setUsage(THREE.DynamicDrawUsage);
-    geometry.setAttribute("position", this.positions);
-    geometry.setAttribute("color", this.colors);
-    geometry.setDrawRange(0, 0);
-    const material = new THREE.LineBasicMaterial({
+    this.geometry = new LineSegmentsGeometry();
+    this.material = new LineMaterial({
       vertexColors: true,
       transparent: true,
       blending: THREE.AdditiveBlending,
       depthWrite: false,
-      fog: false
+      worldUnits: false,
+      linewidth: STREET_LINEWIDTH
     });
-    this.object = new THREE.LineSegments(geometry, material);
+    this.object = new LineSegments2(this.geometry, this.material);
     this.object.frustumCulled = false;
+    this.object.visible = false;
+  }
+
+  // LineMaterial's line thickness is computed in the vertex shader from a
+  // resolution uniform (CSS-pixel linewidth needs the viewport size to
+  // convert to clip space); the caller must call this on init and again on
+  // every resize, or the street width silently drifts with the canvas size.
+  setResolution(width: number, height: number) {
+    this.material.resolution.set(width, height);
   }
 
   // points are the recent fixations, oldest first, y already at street level.
@@ -128,7 +145,7 @@ export class StreetRenderer {
   update(points: THREE.Vector3[], colors?: THREE.Color[]) {
     const paths = Math.min(Math.max(points.length - 1, 0), MAX_PATHS);
     if (paths === 0) {
-      this.object.geometry.setDrawRange(0, 0);
+      this.object.visible = false;
       return;
     }
     const start = points.length - 1 - paths;
@@ -148,22 +165,27 @@ export class StreetRenderer {
       const base = colors?.[idx] ?? EMBER;
       this.color.copy(base).multiplyScalar(0.05 + 0.95 * recency * recency);
 
-      this.positions.setXYZ(v, a.x, a.y, a.z);
-      this.colors.setXYZ(v, this.color.r, this.color.g, this.color.b);
-      v++;
-      this.positions.setXYZ(v, this.corner.x, this.corner.y, this.corner.z);
-      this.colors.setXYZ(v, this.color.r, this.color.g, this.color.b);
-      v++;
-
-      this.positions.setXYZ(v, this.corner.x, this.corner.y, this.corner.z);
-      this.colors.setXYZ(v, this.color.r, this.color.g, this.color.b);
-      v++;
-      this.positions.setXYZ(v, b.x, b.y, b.z);
-      this.colors.setXYZ(v, this.color.r, this.color.g, this.color.b);
-      v++;
+      v = this.writeSegment(v, a, this.corner);
+      v = this.writeSegment(v, this.corner, b);
     }
-    this.object.geometry.setDrawRange(0, v);
-    this.positions.needsUpdate = true;
-    this.colors.needsUpdate = true;
+    this.geometry.setPositions(this.positions.subarray(0, v));
+    this.geometry.setColors(this.colors.subarray(0, v));
+    this.object.visible = true;
+  }
+
+  private writeSegment(v: number, a: THREE.Vector3, b: THREE.Vector3): number {
+    this.positions[v] = a.x;
+    this.positions[v + 1] = a.y;
+    this.positions[v + 2] = a.z;
+    this.positions[v + 3] = b.x;
+    this.positions[v + 4] = b.y;
+    this.positions[v + 5] = b.z;
+    this.colors[v] = this.color.r;
+    this.colors[v + 1] = this.color.g;
+    this.colors[v + 2] = this.color.b;
+    this.colors[v + 3] = this.color.r;
+    this.colors[v + 4] = this.color.g;
+    this.colors[v + 5] = this.color.b;
+    return v + 6;
   }
 }

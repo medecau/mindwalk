@@ -48,27 +48,40 @@ const colors: Record<Touch | "unvisited" | "ghost" | "selected", THREE.Color> = 
 };
 
 const TILE_H = 0.14;
+// footprint floor for both tiles and columns: a rect this size or larger
+// renders at its real dimensions; anything smaller is inflated up to this
+// minimum so slivers stay clickable/visible. Columns and tiles share this
+// floor (and columns carry no extra width beyond it) so a column can never
+// render wider than the tile underneath it -- the old 0.45 floor plus a
+// column-only +0.04 pad inflated dense, sub-0.45 rects until they overlapped
+// their neighbors, z-fighting on the coplanar overlap.
+const MIN_TILE_DIM = 0.18;
 // attention columns sink this far below the tile top instead of butting
 // exactly against it -- two coplanar opaque faces (column base, tile top)
 // would otherwise z-fight. The column's rendered top is unchanged.
 const COLUMN_SINK = 0.05;
-// ground-level street path height: just above the flat tiles, so streets
-// glide over untouched tiles and duck under the taller attention columns of
-// touched files.
-const STREET_Y = TILE_H + 0.02;
+// ground-level street path height: just above the flat tiles and below the
+// low static building tops, so streets glide over untouched tiles and duck
+// under the columns of touched files.
+const STREET_Y = TILE_H + 0.06;
 const LABEL_Y = 2.4;
 // the inspector docks on the right; selection pans the camera clear of it
 const INSPECTOR_RESERVED_PX = 348;
 
-function attentionHeight(touch: Touch, visits: number): number {
-  const base = touch === "edit" ? 7.2 : touch === "read" ? 4.2 : 1.6;
-  return base * (1 + 0.35 * Math.log2(Math.max(visits, 1)));
+// glow: a brightness multiplier applied to a touched column's color, pushed
+// above 1.0 on the toneMapped:false MeshBasicMaterial so it renders
+// unclamped-bright against the dark plain -- attention reads as light, not
+// height. Gently scaled by revisits and capped so a heavily-revisited file
+// doesn't blow out to solid white.
+function attentionGlow(touch: Touch, visits: number): number {
+  const base = touch === "edit" ? 2.4 : touch === "read" ? 1.6 : 1.05;
+  return Math.min(3, base * (1 + 0.15 * Math.log2(Math.max(visits, 1))));
 }
 
 // static map height: normalized lines of code, log-scaled so a few huge files
 // don't flatten everything else. maxLog is log2(largest file's lines).
-const LOC_MIN_H = 0.3;
-const LOC_MAX_H = 16;
+const LOC_MIN_H = 0.35;
+const LOC_MAX_H = 2.4;
 // gamma > 1 exaggerates the top end: small files stay low, big files spike, so
 // the skyline reads as a city (towers vs shacks) instead of a uniform plateau
 const LOC_HEIGHT_GAMMA = 2.2;
@@ -173,6 +186,19 @@ export function CityScene({
       halfW: (maxX - minX) / 2,
       halfD: (maxZ - minZ) / 2
     };
+  }, [city]);
+
+  // fixed height-ramp ceiling = log2 of the largest file's lines across the
+  // whole city. Computed once per city so a file's height is static -- it
+  // never grows or shrinks as playback or attention change, only as of first
+  // touch (fog of war still gates whether a column exists at all).
+  const staticMaxLog = useMemo(() => {
+    if (!city) return 0;
+    let maxLines = 1;
+    for (const file of city.files) {
+      maxLines = Math.max(maxLines, file.lines);
+    }
+    return Math.log2(maxLines);
   }, [city]);
 
   useEffect(() => {
@@ -287,6 +313,9 @@ export function CityScene({
       renderer.setSize(w, h);
       camera.aspect = w / h;
       camera.updateProjectionMatrix();
+      // LineMaterial derives street thickness from this uniform; stale
+      // resolution after a resize renders streets at the wrong pixel width
+      trailRef.current?.setResolution(w, h);
       if (fitPendingRef.current?.()) fitPendingRef.current = null;
     };
     const observer = new ResizeObserver(resize);
@@ -321,8 +350,8 @@ export function CityScene({
             cur = slot.target;
             moving = true;
           }
-          const sx = Math.max(file.rect.w, 0.45) + 0.04;
-          const sz = Math.max(file.rect.d, 0.45) + 0.04;
+          const sx = Math.max(file.rect.w, MIN_TILE_DIM);
+          const sz = Math.max(file.rect.d, MIN_TILE_DIM);
           // column base sits COLUMN_SINK below the tile top (into the tile,
           // not on top of it); the top stays at TILE_H + cur, unchanged.
           const h = Math.max(cur, 0.02) + COLUMN_SINK;
@@ -403,7 +432,17 @@ export function CityScene({
     const plateDirs = city.dirs.filter((dir) => dir.depth <= 3 && dir.rect.w > 0 && dir.rect.d > 0);
     if (plateDirs.length > 0) {
       const plateGeo = new THREE.BoxGeometry(1, 1, 1);
-      const plateMat = new THREE.MeshStandardMaterial({ roughness: 0.95, metalness: 0 });
+      // nested plates at different depths all bottom out on the same y = -0.3
+      // plane (height = top + 0.3 cancels the depth offset), so their bottom
+      // faces are coplanar and z-fight; bias the depth test per-fragment so
+      // the rasterizer picks a stable winner instead of flickering between them.
+      const plateMat = new THREE.MeshStandardMaterial({
+        roughness: 0.95,
+        metalness: 0,
+        polygonOffset: true,
+        polygonOffsetFactor: 1,
+        polygonOffsetUnits: 1
+      });
       const plates = new THREE.InstancedMesh(plateGeo, plateMat, plateDirs.length);
       const matrix = new THREE.Matrix4();
       const shade = new THREE.Color();
@@ -434,8 +473,8 @@ export function CityScene({
     const tiles = new THREE.InstancedMesh(tileGeo, tileMat, city.files.length);
     const matrix = new THREE.Matrix4();
     for (const file of city.files) {
-      const sx = Math.max(file.rect.w, 0.45);
-      const sz = Math.max(file.rect.d, 0.45);
+      const sx = Math.max(file.rect.w, MIN_TILE_DIM);
+      const sz = Math.max(file.rect.d, MIN_TILE_DIM);
       const x = file.rect.x + file.rect.w / 2 - bounds.cx;
       const z = file.rect.z + file.rect.d / 2 - bounds.cz;
       matrix.compose(new THREE.Vector3(x, TILE_H / 2, z), new THREE.Quaternion(), new THREE.Vector3(sx, TILE_H, sz));
@@ -492,6 +531,8 @@ export function CityScene({
     group.add(firefly);
 
     const trail = new StreetRenderer();
+    const canvas = rendererRef.current?.domElement;
+    if (canvas) trail.setResolution(canvas.clientWidth, canvas.clientHeight);
     trailRef.current = trail;
     group.add(trail.object);
 
@@ -572,6 +613,9 @@ export function CityScene({
         // to 1 outside a multi-session project view, leaving this unchanged)
         const decay = playback.decayBySource.get(playback.sourceByFile.get(file.id) ?? -1) ?? 1;
         let color = colors[touch].clone().lerp(colors.unvisited, 1 - decay);
+        // glow (attention) applies only to the default touch-colored case;
+        // history/ghost/selected tints are fixed visual states and stay as-is
+        let glowing = true;
         if (historyColors) {
           // color by commit size (churn) on the LOC ramp; the current commit's
           // files override to blue
@@ -581,10 +625,19 @@ export function CityScene({
             const t = locFraction(lastCommitLOC(file.path), historyMaxLog);
             color = locColor(t);
           }
+          glowing = false;
         }
-        if (file.ghost) color = color.lerp(colors.ghost, 0.45);
-        if (selected) color = colors.selected;
-        slots.push({ fileId: file.id, target: attentionHeight(touch, visits) * decay, color });
+        if (file.ghost) {
+          color = color.lerp(colors.ghost, 0.45);
+          glowing = false;
+        }
+        if (selected) {
+          color = colors.selected;
+          glowing = false;
+        }
+        if (glowing) color = color.multiplyScalar(attentionGlow(touch, visits) * decay);
+        const target = locHeight(locFraction(file.lines, staticMaxLog));
+        slots.push({ fileId: file.id, target, color });
         present.add(file.id);
       }
     }
@@ -602,7 +655,7 @@ export function CityScene({
     if (terrain.instanceColor) terrain.instanceColor.needsUpdate = true;
     if (tiles.instanceColor) tiles.instanceColor.needsUpdate = true;
     slotsRef.current = slots;
-  }, [city, playback, selectedPath, historyColors, currentTouchPaths, historyMaxLog]);
+  }, [city, playback, selectedPath, historyColors, currentTouchPaths, historyMaxLog, staticMaxLog]);
 
   // the inspector opens over the right edge; pan the selected tile clear of it
   useEffect(() => {
@@ -638,8 +691,7 @@ export function CityScene({
 
     const peakFor = (file: CityFile): number => {
       const touch = playback.touchByFile.get(file.id);
-      const visits = playback.visitsByFile.get(file.id) ?? 1;
-      return touch ? attentionHeight(touch, visits) : TILE_H;
+      return touch ? locHeight(locFraction(file.lines, staticMaxLog)) : TILE_H;
     };
 
     const firefly = fireflyRef.current;
@@ -669,7 +721,7 @@ export function CityScene({
       }),
       trailColors
     );
-  }, [city, playback, bounds, sessionColors]);
+  }, [city, playback, bounds, sessionColors, staticMaxLog]);
 
   return <div className="city-scene" ref={hostRef} aria-label="Attention terrain" />;
 }
