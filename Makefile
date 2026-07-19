@@ -1,4 +1,4 @@
-.PHONY: setup web embed-static test build serve
+.PHONY: setup web embed-static test build serve run
 
 setup:
 	npm --prefix web ci
@@ -22,3 +22,5 @@ build: embed-static
 
 serve: web
 	go run ./cmd/mindwalk serve --port 8765 --dev
+
+run: serve

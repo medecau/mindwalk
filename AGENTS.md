@@ -39,7 +39,7 @@ Agent session logs (Claude Code, Codex, or Pi) + repository path
 
 - Use `make setup` to install frontend dependencies.
 - Use `make test` for the standard validation pass.
-- Use `make serve` for local development.
+- Use `make serve` (or `make run`, an alias) for local development.
 - Use `make build` when refreshing the distributable binary and embedded frontend assets.
 
 Keep Go code formatted with `gofmt`. Do not hand-edit `internal/server/static`; when bundled assets need to change, regenerate them with `make build` (or `make embed-static`). When trace or citymap JSON shapes change, update `schema` and the relevant tests in the same change.
